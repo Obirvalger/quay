@@ -58,18 +58,21 @@
           <div class="repo-list-view" namespaces="[organization]" in-read-only-mode="inReadOnlyMode"
                quota-management-enabled="quotaManagementEnabled">
             <h3>Repositories</h3>
-              <span ng-show="Features.QUOTA_MANAGEMENT && organization.quota.configured_quota">
-                  <h4>
-                    Total Quota Consumed:
-                    <span ng-if="organization.quota.quota_bytes != '0'">
-                      {{ organization.quota.percent_consumed ?
-                      (bytesToHumanReadableString(organization.quota.quota_bytes) + "(" + organization.quota.percent_consumed + "%)") :
-                      bytesToHumanReadableString(organization.quota.quota_bytes) }}
-                    </span>
-                    <span ng-if="organization.quota.quota_bytes == '0'">--</span>
-                    {{ " of " +  bytesToHumanReadableString(organization.quota.configured_quota) }}
-                  </h4>
-              </span>
+            <span ng-show="Features.QUOTA_MANAGEMENT">
+              <h4 ng-if="organization.quota_report.quota_bytes || organization.quota_report.configured_quota">
+                Total Quota Consumed:
+                <span ng-if="organization.quota_report.quota_bytes">
+                  {{ bytesToHumanReadableString(organization.quota_report.quota_bytes) }}
+                </span>
+                  <span ng-if="organization.quota_report.configured_quota">
+                    {{ " (" + quotaPercentConsumed(organization) + "%)" }}
+                  </span>
+                <span ng-if="organization.quota_report.configured_quota && !organization.quota_report.quota_bytes">0</span>
+                <span ng-if="organization.quota_report.configured_quota">
+                  {{ " of " + bytesToHumanReadableString(organization.quota_report.configured_quota) }}
+                </span>
+              </h4>
+            </span>
           </div>
         </cor-tab-pane>
 
@@ -141,8 +144,27 @@
               <time-machine-settings organization="organization"></time-machine-settings>
 
               <div quay-show="Features.QUOTA_MANAGEMENT">
-                <quota-management-view organization="organization" disabled="true"></quota-management-view>
+                <table class="co-list-table">
+                  <tr>
+                    <td>Quota Management:</td>
+                    <td>
+                      <quota-management-view organization="organization" view="organization-view"></quota-management-view>
+                    </td>
+                  </tr>
+                </table>
               </div>
+
+              <div quay-show="Features.PROXY_CACHE">
+                <table class="co-list-table">
+                  <tr>
+                    <td>Proxy Cache:</td>
+                    <td>
+                      <proxy-cache-view organization="organization"></proxy-cache-view>
+                    </td>
+                  </tr>
+                </table>
+              </div>
+
             </div>
 
             <!-- Billing Information -->

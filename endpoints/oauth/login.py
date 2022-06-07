@@ -1,14 +1,17 @@
 import logging
 import time
 import recaptcha2
+import os
 
 from collections import namedtuple
 from flask import request, redirect, url_for, Blueprint, abort, session
 from peewee import IntegrityError
 
+
 import features
 
 from app import app, analytics, get_app_url, oauth_login, authentication, url_scheme_and_hostname
+from _init import CONF_DIR
 from auth.auth_context import get_authenticated_user
 from auth.decorators import require_session_login
 from data import model

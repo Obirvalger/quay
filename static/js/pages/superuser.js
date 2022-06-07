@@ -42,11 +42,13 @@
       'page': 0,
     }
     $scope.disk_size_units = {
-        'MB': 1024**2,
-        'GB': 1024**3,
-        'TB': 1024**4,
-      };
-      $scope.quotaUnits = Object.keys($scope.disk_size_units);
+      'KB': 1024,
+      'MB': 1024**2,
+      'GB': 1024**3,
+      'TB': 1024**4,
+    };
+    $scope.quotaUnits = Object.keys($scope.disk_size_units);
+    $scope.registryQuota = null;
 
     $scope.showQuotaConfig = function (org) {
         if (StateService.inReadOnlyMode()) {
@@ -57,18 +59,20 @@
     };
 
     $scope.bytesToHumanReadableString = function(bytes) {
-        let units = Object.keys($scope.disk_size_units).reverse();
-        let result = null;
-        let byte_unit = null;
-        for (const key in units) {
-            byte_unit = units[key];
-            if (bytes >= $scope.disk_size_units[byte_unit]) {
-                result = (bytes / $scope.disk_size_units[byte_unit]).toFixed(2);
-                return result.toString() + " " + byte_unit;
-            }
+      let units = Object.keys($scope.disk_size_units).reverse();
+      let result = null;
+      let byte_unit = null;
+
+      for (const key in units) {
+        byte_unit = units[key];
+        result = Math.round(bytes / $scope.disk_size_units[byte_unit]);
+        if (bytes >= $scope.disk_size_units[byte_unit]) {
+          return result.toString() + " " + byte_unit;
         }
-        return null
-      };
+      }
+
+      return result.toString() + " " + byte_unit;
+    };
 
     $scope.loadMessageOfTheDay = function () {
       $scope.globalMessagesActive = true;
@@ -108,10 +112,22 @@
                                                            ['name', 'email'], []);
       };
 
+    var caclulateRegistryStorage = function () {
+      if (!Features.QUOTA_MANAGEMENT || !$scope.organizations) {
+        return;
+      }
+      let total = 0;
+      $scope.organizations.forEach(function (obj){
+        total += obj['quota_report']['quota_bytes'];
+      })
+      $scope.registryQuota = total;
+    }
+
     $scope.loadOrganizationsInternal = function() {
       $scope.organizationsResource = ApiService.listAllOrganizationsAsResource().get(function(resp) {
         $scope.organizations = resp['organizations'];
         sortOrgs();
+        caclulateRegistryStorage();
         return $scope.organizations;
       });
     };

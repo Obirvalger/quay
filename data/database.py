@@ -769,18 +769,23 @@ class RobotAccountToken(BaseModel):
     fully_migrated = BooleanField(default=False)
 
 
+class QuotaTypes(object):
+    WARNING = "Warning"
+    REJECT = "Reject"
+
+
 class QuotaType(BaseModel):
     name = CharField()
 
 
 class UserOrganizationQuota(BaseModel):
-    namespace_id = QuayUserField(index=True, unique=True)
+    namespace = QuayUserField(index=True, unique=True)
     limit_bytes = BigIntegerField()
 
 
 class QuotaLimits(BaseModel):
-    quota_id = ForeignKeyField(UserOrganizationQuota)
-    quota_type_id = ForeignKeyField(QuotaType)
+    quota = ForeignKeyField(UserOrganizationQuota)
+    quota_type = ForeignKeyField(QuotaType)
     percent_of_limit = IntegerField(default=0)
 
 
@@ -2027,8 +2032,8 @@ class RepoMirrorConfig(BaseModel):
         backref="mirrorpullrobot",
     )
     external_reference = CharField()
-    external_registry_username = EncryptedCharField(max_length=2048, null=True)
-    external_registry_password = EncryptedCharField(max_length=2048, null=True)
+    external_registry_username = EncryptedCharField(max_length=4096, null=True)
+    external_registry_password = EncryptedCharField(max_length=4096, null=True)
     external_registry_config = JSONField(default={})
 
     # Worker Queuing
@@ -2093,8 +2098,8 @@ class ProxyCacheConfig(BaseModel):
     # upstream_registry is the images prefix of the cached registry
     # i.e quay.io/myorg; docker.io
     upstream_registry = CharField(max_length=270)
-    upstream_registry_username = EncryptedCharField(max_length=2048, null=True)
-    upstream_registry_password = EncryptedCharField(max_length=2048, null=True)
+    upstream_registry_username = EncryptedCharField(max_length=4096, null=True)
+    upstream_registry_password = EncryptedCharField(max_length=4096, null=True)
     expiration_s = IntegerField(default=DEFAULT_PROXY_CACHE_EXPIRATION)
     insecure = BooleanField(default=False)
 

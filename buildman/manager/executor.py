@@ -602,9 +602,7 @@ class KubernetesExecutor(BuilderExecutor):
             },
             "spec": {
                 "activeDeadlineSeconds": self.executor_config.get("MAXIMUM_JOB_TIME", 7200),
-                "ttlSecondsAfterFinished": self.executor_config.get(
-                    "RETENTION_AFTER_FINISHED", 120
-                ),
+                "backoffLimit": 1,
                 "template": {
                     "metadata": {
                         "labels": {
@@ -617,12 +615,18 @@ class KubernetesExecutor(BuilderExecutor):
                     "spec": {
                         "imagePullSecrets": [{"name": image_pull_secret_name}],
                         "restartPolicy": "Never",
-                        "dnsPolicy": "Default",
+                        "dnsPolicy": self.executor_config.get("DNS_POLICY", "Default"),
                         "containers": [self._build_job_containers(token, build_uuid)],
                     },
                 },
             },
         }
+
+        # If DEBUG isn't enabled, add a TTL on the job
+        if not self.executor_config.get("DEBUG", False):
+            job_resource["spec"]["ttlSecondsAfterFinished"] = self.executor_config.get(
+                "RETENTION_AFTER_FINISHED", 120
+            )
 
         if self._is_openshift_kubernetes_distribution():
             # Setting `automountServiceAccountToken` to false will prevent automounting API credentials for a service account.
@@ -696,7 +700,7 @@ class KubernetesPodmanExecutor(KubernetesExecutor):
         super(KubernetesExecutor, self).__init__(*args, **kwargs)
         self.namespace = self.executor_config.get("BUILDER_NAMESPACE", "builder")
         self.image = self.executor_config.get(
-            "BUILDER_CONTAINER_IMAGE", "quay.io/quay/quay-builder-podman:stable"
+            "BUILDER_CONTAINER_IMAGE", "quay.io/projectquay/quay-builder:latest"
         )
 
     def _build_job_containers(self, token, build_uuid):

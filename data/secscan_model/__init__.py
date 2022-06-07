@@ -35,12 +35,15 @@ class SecurityScannerModelProxy(SecurityScannerInterface):
 
         return self
 
-    def perform_indexing(self, next_token=None):
+    def perform_indexing(self, next_token=None, batch_size=None):
         if next_token is not None:
             assert isinstance(next_token, V4ScanToken)
             assert isinstance(next_token.min_id, int)
 
-        return self._model.perform_indexing(next_token)
+        return self._model.perform_indexing(next_token, batch_size)
+
+    def perform_indexing_recent_manifests(self, batch_size=None):
+        self._model.perform_indexing_recent_manifests(batch_size)
 
     def load_security_information(self, manifest_or_legacy_image, include_vulnerabilities):
         manifest = manifest_or_legacy_image.as_manifest()

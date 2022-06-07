@@ -30,7 +30,7 @@ class SecurityScannerInterface(object):
         """
 
     @abstractmethod
-    def perform_indexing(self, start_token=None):
+    def perform_indexing(self, start_token=None, batch_size=None):
         """
         Performs indexing of the next set of unindexed manifests/images.
 
@@ -38,6 +38,12 @@ class SecurityScannerInterface(object):
         index for the next iteration of indexing. The tokens returned and given are assumed to be
         opaque outside of this implementation and should not be relied upon by the caller to conform
         to any particular format.
+        """
+
+    @abstractmethod
+    def perform_indexing_recent_manifests(self, batch_size=None):
+        """
+        Performs indexing of a recent set of unindexed manifests/images.
         """
 
     @abstractmethod

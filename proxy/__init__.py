@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 
 import requests
+from requests.exceptions import RequestException
 
 from app import model_cache
 from data.cache import cache_key
@@ -22,7 +23,10 @@ REGISTRY_URLS = {"docker.io": "registry-1.docker.io"}
 
 class UpstreamRegistryError(Exception):
     def __init__(self, detail):
-        msg = f"Error requesting upstream registry: {detail}"
+        msg = (
+            "the requested image may not exist in the upstream registry, or the configured "
+            f"Quay organization credentials have insufficient rights to access it ({detail})"
+        )
         super().__init__(msg)
 
 
@@ -43,8 +47,9 @@ def parse_www_auth(value: str) -> dict[str, str]:
 
 
 class Proxy:
-    def __init__(self, config: ProxyCacheConfig, repository: str):
+    def __init__(self, config: ProxyCacheConfig, repository: str, validation: bool = False):
         self._config = config
+        self._validation = validation
 
         hostname = REGISTRY_URLS.get(
             config.upstream_registry_hostname,
@@ -57,7 +62,8 @@ class Proxy:
         self.base_url = url
         self._session = requests.Session()
         self._repo = repository
-        self._authorize(self._credentials())
+        self._authorize(self._credentials(), force_renewal=self._validation)
+        # flag used for validating Proxy cache config before saving to db
 
     def get_manifest(
         self, image_ref: str, media_types: list[str] | None = None
@@ -73,8 +79,10 @@ class Proxy:
 
     def manifest_exists(self, image_ref: str, media_types: list[str] | None = None) -> str | None:
         """
-        Returns the manifest digest (docker-content-digest) if given by the
-        upstream registry.
+        Returns the manifest digest.
+
+        Looks for the digest in the docker-content-digest header. If not
+        present in the response, parses the manifest then calculate the digest.
 
         If the manifest does not exist or the upstream registry errors, raises
         an UpstreamRegistryError exception.
@@ -90,6 +98,9 @@ class Proxy:
         url = f"{self.base_url}/v2/{self._repo}/blobs/{digest}"
         resp = self.get(
             url,
+            headers={
+                "Accept-Encoding": "identity",
+            },
             allow_redirects=True,
             stream=True,
         )
@@ -117,20 +128,30 @@ class Proxy:
         return self._request(self._session.head, *args, **kwargs)
 
     def _request(self, request_func, *args, **kwargs) -> requests.Response:
-        resp = request_func(*args, **kwargs)
+        resp = self._safe_request(request_func, *args, **kwargs)
         if resp.status_code == 401:
             self._authorize(self._credentials(), force_renewal=True)
-            resp = request_func(*args, **kwargs)
+            resp = self._safe_request(request_func, *args, **kwargs)
         if not resp.ok:
             raise UpstreamRegistryError(resp.status_code)
         return resp
+
+    def _safe_request(self, request_func, *args, **kwargs):
+        try:
+            return request_func(*args, **kwargs)
+        except (RequestException, ConnectionError) as e:
+            raise UpstreamRegistryError(str(e))
 
     def _credentials(self) -> tuple[str, str] | None:
         auth = None
         username = self._config.upstream_registry_username
         password = self._config.upstream_registry_password
         if username is not None and password is not None:
-            auth = (username.decrypt(), password.decrypt())
+            auth = (
+                (username, password)
+                if isinstance(username, str) and isinstance(password, str)
+                else (username.decrypt(), password.decrypt())
+            )
         return auth
 
     def _authorize(self, auth: tuple[str, str] | None = None, force_renewal: bool = False) -> None:
@@ -147,7 +168,7 @@ class Proxy:
 
         # the /v2/ endpoint returns 401 when the client is not authorized.
         # if we get 200, there's no need to proceed.
-        resp = self._session.get(f"{self.base_url}/v2/")
+        resp = self._safe_request(self._session.get, f"{self.base_url}/v2/")
         if resp.status_code == 200:
             return
 
@@ -168,9 +189,11 @@ class Proxy:
         if auth is not None:
             basic_auth = requests.auth.HTTPBasicAuth(auth[0], auth[1])
 
-        resp = self._session.get(auth_url, auth=basic_auth)
+        resp = self._safe_request(self._session.get, auth_url, auth=basic_auth)
         if not resp.ok:
-            raise Exception(f"Failed to get token from '{auth_url}', {resp.status_code}")
+            raise UpstreamRegistryError(
+                f"Failed to get token from: '{realm}', with status code: {resp.status_code}"
+            )
 
         resp_json = resp.json()
         token = resp_json.get("token")
@@ -187,6 +210,7 @@ class Proxy:
     def _cache_key(self, expires_in=TOKEN_VALIDITY_LIFETIME_S):
         key = cache_key.for_upstream_registry_token(
             self._config.organization.username,
+            self._config.upstream_registry,
             self._repo,
             f"{expires_in}s",
         )

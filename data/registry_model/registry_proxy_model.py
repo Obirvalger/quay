@@ -16,9 +16,12 @@ from data.database import (
 )
 from data.model import (
     oci,
+    namespacequota,
+    repository,
     RepositoryDoesNotExist,
     ManifestDoesNotExist,
     TagDoesNotExist,
+    QuotaExceededException,
 )
 from data.model.repository import get_repository, create_repository
 from data.model.proxy_cache import get_proxy_cache_config_for_org
@@ -249,6 +252,19 @@ class ProxyModel(OCIModel):
 
         return tag
 
+    def _recalculate_repository_size(self, repo_ref: RepositoryReference) -> None:
+        if features.QUOTA_MANAGEMENT:
+            repository.force_cache_repo_size(repo_ref.id)
+
+    def _enforce_repository_quota(self, repo_ref: RepositoryReference) -> None:
+        if features.QUOTA_MANAGEMENT:
+            quota = namespacequota.verify_namespace_quota(repo_ref)
+            if quota["severity_level"] == "Warning":
+                namespacequota.notify_organization_admins(repo_ref, "quota_warning")
+            elif quota["severity_level"] == "Reject":
+                namespacequota.notify_organization_admins(repo_ref, "quota_error")
+                raise QuotaExceededException
+
     def _create_and_tag_manifest(
         self,
         repo_ref: RepositoryReference,
@@ -266,6 +282,7 @@ class ProxyModel(OCIModel):
         or the retrieved manifest is invalid (for docker manifest schema v1).
         """
         self._proxy.manifest_exists(manifest_ref, ACCEPTED_MEDIA_TYPES)
+        self._enforce_repository_quota(repo_ref)
         upstream_manifest = self._pull_upstream_manifest(repo_ref.name, manifest_ref)
         manifest, tag = create_manifest_fn(repo_ref, upstream_manifest, manifest_ref)
         return manifest, tag
@@ -298,22 +315,35 @@ class ProxyModel(OCIModel):
         freshly out of the database, and a boolean indicating whether the returned
         tag was newly created or not.
         """
+        upstream_manifest = None
         upstream_digest = self._proxy.manifest_exists(manifest_ref, ACCEPTED_MEDIA_TYPES)
         up_to_date = manifest.digest == upstream_digest
+
+        # manifest_exists will return an empty/None digest when the upstream
+        # registry omits the docker-content-digest header.
+        if not upstream_digest:
+            upstream_manifest = self._pull_upstream_manifest(repo_ref.name, manifest_ref)
+            up_to_date = manifest.digest == upstream_manifest.digest
+
         placeholder = manifest.internal_manifest_bytes.as_unicode() == ""
         if up_to_date and not placeholder:
             return tag, False
 
-        upstream_manifest = self._pull_upstream_manifest(repo_ref.name, manifest_ref)
+        if upstream_manifest is None:
+            upstream_manifest = self._pull_upstream_manifest(repo_ref.name, manifest_ref)
+
+        self._enforce_repository_quota(repo_ref)
         if up_to_date and placeholder:
             with db_disallow_replica_use():
                 with db_transaction():
                     q = ManifestTable.update(
-                        {ManifestTable.manifest_bytes: upstream_manifest.bytes.as_unicode()}
+                        manifest_bytes=upstream_manifest.bytes.as_unicode(),
+                        layers_compressed_size=upstream_manifest.layers_compressed_size,
                     ).where(ManifestTable.id == manifest.id)
                     q.execute()
                     self._create_placeholder_blobs(upstream_manifest, manifest.id, repo_ref.id)
                     db_tag = oci.tag.get_tag_by_manifest_id(repo_ref.id, manifest.id)
+                    self._recalculate_repository_size(repo_ref)
                     return Tag.for_tag(db_tag, self._legacy_image_id_handler), False
 
         # if we got here, the manifest is stale, so we both create a new manifest
@@ -346,6 +376,7 @@ class ProxyModel(OCIModel):
                     db_manifest = oci.manifest.create_manifest(
                         repository_ref.id, manifest, raise_on_error=True
                     )
+                    self._recalculate_repository_size(repository_ref)
                     if db_manifest is None:
                         return None, None
 
@@ -398,6 +429,7 @@ class ProxyModel(OCIModel):
         with db_disallow_replica_use():
             with db_transaction():
                 db_manifest = oci.manifest.create_manifest(repository_ref.id, manifest)
+                self._recalculate_repository_size(repository_ref)
                 expiration = self._config.expiration_s or None
                 tag = Tag.for_tag(
                     oci.tag.create_temporary_tag_if_necessary(db_manifest, expiration),
@@ -469,6 +501,7 @@ class ProxyModel(OCIModel):
         Download blob from upstream registry and perform a monolitic upload to
         Quay's own storage.
         """
+        self._enforce_repository_quota(repo_ref)
         expiration = (
             self._config.expiration_s
             if self._config.expiration_s
@@ -485,6 +518,7 @@ class ProxyModel(OCIModel):
             with complete_when_uploaded(uploader):
                 uploader.upload_chunk(app.config, resp.raw, start_offset, length)
                 uploader.commit_to_blob(app.config, digest)
+        self._recalculate_repository_size(repo_ref)
 
     def convert_manifest(
         self,

@@ -643,9 +643,10 @@ def authorize_application():
     provider = FlaskAuthorizationProvider()
     redirect_uri = request.form.get("redirect_uri", None)
     scope = request.form.get("scope", None)
+    state = request.form.get("state", None)
 
     # Add the access token.
-    return provider.get_token_response("token", client_id, redirect_uri, scope=scope)
+    return provider.get_token_response("token", client_id, redirect_uri, scope=scope, state=state)
 
 
 @web.route(app.config["LOCAL_OAUTH_HANDLER"], methods=["GET"])
@@ -735,6 +736,7 @@ def request_authorization_code():
             redirect_uri=redirect_uri,
             scope=scope,
             csrf_token_val=generate_csrf_token(),
+            state=state,
         )
 
     if response_type == "token":

@@ -69,7 +69,7 @@ def fetch_manifest_by_tagname(namespace_name, repo_name, manifest_ref, registry_
         )
     except RepositoryDoesNotExist as e:
         image_pulls.labels("v2", "tag", 404).inc()
-        raise NameUnknown(str(e))
+        raise NameUnknown("repository not found")
 
     try:
         tag = registry_model.get_repo_tag(repository_ref, manifest_ref, raise_on_error=True)
@@ -138,7 +138,7 @@ def fetch_manifest_by_digest(namespace_name, repo_name, manifest_ref, registry_m
         )
     except RepositoryDoesNotExist as e:
         image_pulls.labels("v2", "manifest", 404).inc()
-        raise NameUnknown(str(e))
+        raise NameUnknown("repository not found")
 
     try:
         manifest = registry_model.lookup_manifest_by_digest(
@@ -280,17 +280,19 @@ def write_manifest_by_digest(namespace_name, repo_name, manifest_ref):
     repository_ref = registry_model.lookup_repository(namespace_name, repo_name)
     if repository_ref is None:
         image_pushes.labels("v2", 404, "").inc()
-        raise NameUnknown()
+        raise NameUnknown("repository not found")
 
     expiration_sec = app.config["PUSH_TEMP_TAG_EXPIRATION_SEC"]
     manifest = registry_model.create_manifest_with_temp_tag(
         repository_ref, parsed, expiration_sec, storage
     )
+
     if manifest is None:
         image_pushes.labels("v2", 400, "").inc()
         raise ManifestInvalid()
 
     image_pushes.labels("v2", 201, manifest.media_type).inc()
+
     return Response(
         "OK",
         status=201,
@@ -335,7 +337,7 @@ def delete_manifest_by_digest(namespace_name, repo_name, manifest_ref):
     with db_disallow_replica_use():
         repository_ref = registry_model.lookup_repository(namespace_name, repo_name)
         if repository_ref is None:
-            raise NameUnknown()
+            raise NameUnknown("repository not found")
 
         manifest = registry_model.lookup_manifest_by_digest(repository_ref, manifest_ref)
         if manifest is None:
@@ -349,7 +351,7 @@ def delete_manifest_by_digest(namespace_name, repo_name, manifest_ref):
             track_and_log("delete_tag", repository_ref, tag=tag.name, digest=manifest_ref)
 
         if app.config.get("FEATURE_QUOTA_MANAGEMENT", False):
-            namespacequota.force_cache_repo_size(repository_ref)
+            repository.force_cache_repo_size(repository_ref.id)
 
         return Response(status=202)
 
@@ -395,15 +397,7 @@ def _write_manifest(
     # Ensure that the repository exists.
     repository_ref = registry_model.lookup_repository(namespace_name, repo_name)
     if repository_ref is None:
-        raise NameUnknown()
-
-    if app.config.get("FEATURE_QUOTA_MANAGEMENT", False):
-        quota = namespacequota.verify_namespace_quota_force_cache(repository_ref)
-        if quota["severity_level"] == "Warning":
-            namespacequota.notify_organization_admins(repository_ref, "quota_warning")
-        elif quota["severity_level"] == "Reject":
-            namespacequota.notify_organization_admins(repository_ref, "quota_error")
-            raise QuotaExceeded()
+        raise NameUnknown("repository not found")
 
     # Create the manifest(s) and retarget the tag to point to it.
     try:
@@ -417,6 +411,14 @@ def _write_manifest(
 
     if manifest is None:
         raise ManifestInvalid()
+
+    if app.config.get("FEATURE_QUOTA_MANAGEMENT", False):
+        quota = namespacequota.verify_namespace_quota_force_cache(repository_ref)
+        if quota["severity_level"] == "Warning":
+            namespacequota.notify_organization_admins(repository_ref, "quota_warning")
+        elif quota["severity_level"] == "Reject":
+            namespacequota.notify_organization_admins(repository_ref, "quota_error")
+            raise QuotaExceeded()
 
     return repository_ref, manifest, tag
 

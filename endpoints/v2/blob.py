@@ -237,12 +237,14 @@ def start_blob_upload(namespace_name, repo_name):
 
     repository_ref = registry_model.lookup_repository(namespace_name, repo_name)
     if repository_ref is None:
-        raise NameUnknown()
+        raise NameUnknown("repository not found")
 
     if app.config.get("FEATURE_QUOTA_MANAGEMENT", False):
         quota = namespacequota.verify_namespace_quota(repository_ref)
         if quota["severity_level"] == "Reject":
-            namespacequota.notify_organization_admins(repository_ref, "quota_error")
+            namespacequota.notify_organization_admins(
+                repository_ref, "quota_error", {"severity": "Reject"}
+            )
             raise QuotaExceeded
 
     # Check for mounting of a blob from another repository.
@@ -304,7 +306,7 @@ def start_blob_upload(namespace_name, repo_name):
 def fetch_existing_upload(namespace_name, repo_name, upload_uuid):
     repository_ref = registry_model.lookup_repository(namespace_name, repo_name)
     if repository_ref is None:
-        raise NameUnknown()
+        raise NameUnknown("repository not found")
 
     uploader = retrieve_blob_upload_manager(
         repository_ref, upload_uuid, storage, _upload_settings()
@@ -333,12 +335,14 @@ def fetch_existing_upload(namespace_name, repo_name, upload_uuid):
 def upload_chunk(namespace_name, repo_name, upload_uuid):
     repository_ref = registry_model.lookup_repository(namespace_name, repo_name)
     if repository_ref is None:
-        raise NameUnknown()
+        raise NameUnknown("repository not found")
 
     if app.config.get("FEATURE_QUOTA_MANAGEMENT", False):
         quota = namespacequota.verify_namespace_quota_during_upload(repository_ref)
         if quota["severity_level"] == "Reject":
-            namespacequota.notify_organization_admins(repository_ref, "quota_error")
+            namespacequota.notify_organization_admins(
+                repository_ref, "quota_error", {"severity": "Reject"}
+            )
             raise QuotaExceeded
 
     uploader = retrieve_blob_upload_manager(
@@ -377,7 +381,15 @@ def monolithic_upload_or_last_chunk(namespace_name, repo_name, upload_uuid):
     # Find the upload.
     repository_ref = registry_model.lookup_repository(namespace_name, repo_name)
     if repository_ref is None:
-        raise NameUnknown()
+        raise NameUnknown("repository not found")
+
+    if app.config.get("FEATURE_QUOTA_MANAGEMENT", False):
+        quota = namespacequota.verify_namespace_quota_during_upload(repository_ref)
+        if quota["severity_level"] == "Reject":
+            namespacequota.notify_organization_admins(
+                repository_ref, "quota_error", {"severity": "Reject"}
+            )
+            raise QuotaExceeded
 
     uploader = retrieve_blob_upload_manager(
         repository_ref, upload_uuid, storage, _upload_settings()
@@ -412,7 +424,7 @@ def monolithic_upload_or_last_chunk(namespace_name, repo_name, upload_uuid):
 def cancel_upload(namespace_name, repo_name, upload_uuid):
     repository_ref = registry_model.lookup_repository(namespace_name, repo_name)
     if repository_ref is None:
-        raise NameUnknown()
+        raise NameUnknown("repository not found")
 
     uploader = retrieve_blob_upload_manager(
         repository_ref, upload_uuid, storage, _upload_settings()

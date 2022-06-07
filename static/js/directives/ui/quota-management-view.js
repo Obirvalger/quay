@@ -2,289 +2,532 @@
  * An element which displays a panel for managing users.
  */
 angular.module('quay').directive('quotaManagementView', function () {
-    var directiveDefinitionObject = {
-        templateUrl: '/static/directives/quota-management-view.html',
-        restrict: 'AEC',
-        scope: {
-            'organization': '=organization',
-            'disabled': '=disabled'
-        },
-        controller: function ($scope, $timeout, $location, $element, ApiService, UserService,
+  var directiveDefinitionObject = {
+    templateUrl: '/static/directives/quota-management-view.html',
+    restrict: 'AEC',
+    scope: {
+      'view': '@view',
+      'organization': '=organization',
+    },
+    controller: function ($scope, $timeout, $location, $element, ApiService, UserService,
                           TableService, Features, StateService, $q) {
-            $scope.prevquotaEnabled = false;
-            $scope.updating = false;
-            $scope.limitCounter = 0;
-            $scope.quotaLimitTypes = [];
-            $scope.prevQuotaConfig = {'limit_bytes': null, 'quota': null, 'limits': [], 'bytes_unit': null};
-            $scope.currentQuotaConfig = {'limit_bytes': null, 'quota': null, 'limits': [], 'bytes_unit': null};
-            $scope.defer = null;
-            $scope.disk_size_units = {
-                'MB': 1024**2,
-                'GB': 1024**3,
-                'TB': 1024**4,
-            };
-            $scope.quotaUnits = Object.keys($scope.disk_size_units);
-            $scope.rejectLimitType = 'Reject';
-            $scope.isUpdateable = false;
+      $scope.prevquotaEnabled = false;
+      $scope.updating = false;
+      $scope.limitCounter = 0;
+      $scope.quotaLimitTypes = [
+        "Reject", "Warning"
+      ];
 
-            var loadOrgQuota = function (fresh) {
-                $scope.nameSpaceResource = ApiService.getNamespaceQuota(null,
-                {'namespace': $scope.organization.name}).then((resp) => {
-                    $scope.prevQuotaConfig['limit_bytes'] = $scope.currentQuotaConfig['limit_bytes'] = resp["limit_bytes"];
-                    let { result, byte_unit } = bytes_to_human_readable_string(resp["limit_bytes"]);
-                    $scope.prevQuotaConfig['quota'] = $scope.currentQuotaConfig['quota'] = result
-                    $scope.prevQuotaConfig['bytes_unit'] = $scope.currentQuotaConfig['bytes_unit'] = byte_unit;
+      $scope.prevQuotaConfig = {'quota': null, 'limits': {}};
+      $scope.currentQuotaConfig = {'quota': null, 'limits': {}};
+      $scope.newLimitConfig = {'type': null, 'limit_percent': null};
 
-                    if (fresh) {
-                        for (let i = 0; i < resp["quota_limit_types"].length; i++) {
-                            let temp = resp["quota_limit_types"][i];
-                            temp["quota_limit_id"] = null;
-                            $scope.quotaLimitTypes.push(temp);
-                        }
-                    }
+      $scope.defer = null;
+      $scope.disk_size_units = {
+        'KB': 1024,
+        'MB': 1024 ** 2,
+        'GB': 1024 ** 3,
+        'TB': 1024 ** 4,
+      };
+      $scope.quotaUnits = Object.keys($scope.disk_size_units);
+      $scope.rejectLimitType = 'Reject';
+      $scope.errorMessage = '';
+      $scope.errorMessagesObj = {
+        'quotaLessThanZero': 'A quota greater 0 must be defined.',
+        'quotaLimitNotInRange': 'A quota limit greater 0 and less than 100 must be defined.',
+        'validNumber': 'Please enter a valid number.',
+        'setQuotaBeforeLimit': 'Please set quota before adding a quota Limit.',
+        'singleRejectLimit': 'Error: A quota policy should only have a single reject threshold.',
+        'identicalThresholds': 'Error: The quota policy contains two identical thresholds.',
+        'decimalEntryError': 'Error: Decimal entries are not supported. Please enter a positive integer.',
+      };
+      $scope.warningMessage = '';
+      $scope.warningMessagesObj = {
+        'noQuotaLimit': 'Note: No quota policy defined. Users will be able to exceed the storage quota set above.',
+        'noRejectLimit': 'Note: This quota has no hard limit enforced via a rejection thresholds. Users will be able to exceed the storage quota set above.',
+        'usingDefaultQuota': 'Note: No quota policy defined for this organization, using system default.',
+      }
+      $scope.showConfigPanel = false;
+      $scope.using_default_config = false;
+      $scope.default_config_exists = false;
+      $scope.quota_limit_error = false;
 
-                    if (resp["limit_bytes"] != null) {
-                        $scope.prevquotaEnabled = true;
-                    }
-                });
+      var loadOrgQuota = function () {
+        $scope.nameSpaceResource = ApiService.listOrganizationQuota(
+          null, {'orgname': $scope.organization.name}
+        ).then((resp) => {
+          if (resp.length > 0) {
+            const quota = resp[0];
+            $scope.prevQuotaConfig['id'] = quota["id"];
+            $scope.currentQuotaConfig['id'] = quota["id"];
+
+            for (const i in quota['limits']) {
+              const limitId = quota['limits'][i]['id'];
+              $scope.prevQuotaConfig['limits'][limitId] = $.extend({}, quota["limits"][i]);
+              $scope.currentQuotaConfig['limits'][limitId] = $.extend({}, quota["limits"][i]);
             }
 
-            var human_readable_string_to_bytes = function(quota, bytes_unit) {
-                return Number(quota*$scope.disk_size_units[bytes_unit]);
-            };
+            let {result, byte_unit} = normalizeLimitBytes(quota["limit_bytes"]);
+            $scope.prevQuotaConfig['quota'] = result;
+            $scope.currentQuotaConfig['quota'] = result;
+            $scope.prevQuotaConfig['byte_unit'] = byte_unit;
+            $scope.currentQuotaConfig['byte_unit'] = byte_unit;
+            $scope.using_default_config = quota["default_config"];
+            $scope.default_config_exists = quota["default_config_exists"];
+            $scope.warningMessage = "";
 
-            var bytes_to_human_readable_string = function (bytes) {
-                let units = Object.keys($scope.disk_size_units).reverse();
-                let result = null;
-                let byte_unit = null;
-                for (const key in units) {
-                    byte_unit = units[key];
-                    if (bytes >= $scope.disk_size_units[byte_unit]) {
-                        result = bytes / $scope.disk_size_units[byte_unit];
-                        return { result, byte_unit };
-                    }
-                }
-                return { result, byte_unit };
-            };
-
-            var loadQuotaLimits = function (fresh) {
-                $scope.nameSpaceQuotaLimitsResource = ApiService.getOrganizationQuotaLimit(null,
-                    {'namespace': $scope.organization.name}).then((resp) => {
-                    $scope.prevQuotaConfig['limits'] = [];
-                    $scope.currentQuotaConfig['limits'] = [];
-                    for (let i = 0; i < resp['quota_limits'].length; i ++) {
-                        $scope.prevQuotaConfig['limits'].push({...resp['quota_limits'][i]});
-                        $scope.currentQuotaConfig['limits'].push({...resp['quota_limits'][i]});
-                    }
-
-                    if (fresh) {
-                      if ($scope.currentQuotaConfig['limits']) {
-                        for (let i = 0; i < $scope.currentQuotaConfig['limits'].length; i++) {
-                          populateQuotaLimit();
-                        }
-                      }
-                    }
-                });
+            if (quota["default_config"]) {
+              $scope.warningMessage = $scope.warningMessagesObj["usingDefaultQuota"];
             }
 
-            var updateOrganizationQuota = function(params) {
-
-                if (!$scope.prevquotaEnabled || $scope.prevQuotaConfig['quota'] != $scope.currentQuotaConfig['quota']
-                     || $scope.prevQuotaConfig['bytes_unit'] != $scope.currentQuotaConfig['bytes_unit'] ) {
-                    let quotaMethod = ApiService.createNamespaceQuota;
-                    let m1 = "createNamespaceQuota";
-                    let limit_bytes = human_readable_string_to_bytes($scope.currentQuotaConfig['quota'], $scope.currentQuotaConfig['bytes_unit']);
-                    let data = {
-                        'limit_bytes': limit_bytes,
-                    };
-
-                    if ($scope.prevquotaEnabled) {
-                        quotaMethod = ApiService.changeOrganizationQuota;
-                        m1 = "changeOrganizationQuota";
-                    }
-
-                    quotaMethod(data, params).then((resp) => {
-                        $scope.updating = false;
-                        loadOrgQuota(false);
-                    },  displayError());
-                }
+            if (quota["limit_bytes"] != null) {
+              $scope.prevquotaEnabled = true;
             }
 
-            var createOrgQuotaLimit = function(data, params) {
-                for (let i = 0; i < data.length; i++) {
-                    let to_send = {
-                        'percent_of_limit': data[i]['percent_of_limit'],
-                        'quota_type_id': data[i]['limit_type']['quota_type_id']
-                    };
-                    ApiService.createOrganizationQuotaLimit(to_send, params).then((resp) => {
-                        $scope.prevquotaEnabled = true;
-                    }, displayError());
-                }
-            }
+            $scope.organization.quota_report.configured_quota = quota["limit_bytes"];
+            $scope.organization.quota_report.percent_consumed = (parseInt($scope.organization.quota_report.quota_bytes) / $scope.organization.quota_report.configured_quota * 100).toFixed(2);
+          }
+          populateDefaultQuotaLimits();
+        });
+      };
 
-            var updateOrgQuotaLimit = function(data, params) {
-                if (!data) {
-                    return;
-                }
-                for (let i = 0; i < data.length; i++) {
-                    let to_send = {
-                        'percent_of_limit': data[i]['percent_of_limit'],
-                        'quota_type_id': data[i]['limit_type']['quota_type_id'],
-                        'quota_limit_id': data[i]['limit_type']['quota_limit_id']
-                    };
-                    ApiService.changeOrganizationQuotaLimit(to_send, params).then((resp) => {
-                        $scope.prevquotaEnabled = true;
-                    }, displayError());
-                }
-            }
+      var humanReadableStringToBytes = function (quota, bytes_unit) {
+        return Number(quota * $scope.disk_size_units[bytes_unit]);
+      };
 
-            var deleteOrgQuotaLimit = function(data, params) {
-                if (!data) {
-                    return;
-                }
-                for (let i = 0; i < data.length; i++) {
-                    params['quota_limit_id'] = data[i]['limit_type']['quota_limit_id'];
-                    ApiService.deleteOrganizationQuotaLimit(null, params).then((resp) => {
-                        $scope.prevquotaEnabled = true;
-                    }, displayError());
-                }
-            }
+      var normalizeLimitBytes = function (bytes) {
+        let units = Object.keys($scope.disk_size_units).reverse();
+        let result = null;
+        let byte_unit = null;
 
-            var similarLimits =function() {
-                return JSON.stringify($scope.prevQuotaConfig['limits']) === JSON.stringify($scope.currentQuotaConfig['limits']);
-            }
-
-            var fetchLimitsToDelete = function() {
-                // In prev but not in current => to be deleted
-                let currentQuotaConfig = $scope.currentQuotaConfig['limits'];
-                let prevQuotaConfig = $scope.prevQuotaConfig['limits'];
-                return prevQuotaConfig.filter(function(obj1) {
-                    return obj1.limit_type.quota_limit_id != null && !currentQuotaConfig.some(function(obj2) {
-                        return obj1.limit_type.quota_limit_id === obj2.limit_type.quota_limit_id;
-                    });
-                });
-            }
-
-            var fetchLimitsToAdd = function() {
-                // In current but not in prev => to add
-                let currentQuotaConfig = $scope.currentQuotaConfig['limits'];
-                let prevQuotaConfig = $scope.prevQuotaConfig['limits'];
-                return currentQuotaConfig.filter(function(obj1) {
-                    return obj1.limit_type.quota_limit_id == null && !prevQuotaConfig.some(function(obj2) {
-                        return obj1.limit_type.name === obj2.limit_type.name && obj1.percent_of_limit === obj2.percent_of_limit;
-                    });
-                });
-            }
-
-            var fetchLimitsToUpdate = function() {
-                // In current and prev but different values
-                let currentQuotaConfig = $scope.currentQuotaConfig['limits'];
-                let prevQuotaConfig = $scope.prevQuotaConfig['limits'];
-                return currentQuotaConfig.filter(function(obj1) {
-                    return prevQuotaConfig.some(function(obj2) {
-                        return obj1.limit_type.quota_limit_id == obj2.limit_type.quota_limit_id &&
-                            (obj1.percent_of_limit != obj2.percent_of_limit || obj1.limit_type.name != obj2.limit_type.name);
-                    });
-                });
-
-            }
-
-            var updateQuotaLimits = function(params) {
-                if (similarLimits()) {
-                    return;
-                }
-
-                let toDelete = fetchLimitsToDelete();
-                let toAdd = fetchLimitsToAdd();
-                let toUpdate = fetchLimitsToUpdate();
-
-                createOrgQuotaLimit(toAdd, params);
-                updateOrgQuotaLimit(toUpdate, params);
-                deleteOrgQuotaLimit(toDelete, params);
-            }
-
-            var displayError = function(message = 'Could not update quota details') {
-                $scope.updating = true;
-                let errorDisplay = ApiService.errorDisplay(message, () => {
-                    $scope.updating = false;
-                });
-                return errorDisplay;
-            }
-
-            var validLimits = function() {
-                let valid = true;
-                let rejectCount = 0;
-                for (let i = 0; i < $scope.currentQuotaConfig['limits'].length; i++) {
-                    if ($scope.currentQuotaConfig['limits'][i]['limit_type']['name'] === $scope.rejectLimitType) {
-                        rejectCount++;
-
-                        if (rejectCount > 1) {
-                            let alert = displayError('You can only have one Reject type of Quota Limits. Please remove to proceed');
-                            alert();
-                            valid = false;
-                            break;
-                        }
-                    }
-
-                }
-                return valid;
-            }
-
-            $scope.disableSave = function() {
-                return $scope.prevQuotaConfig['quota'] === $scope.currentQuotaConfig['quota'] &&
-                       $scope.prevQuotaConfig['bytes_unit'] === $scope.currentQuotaConfig['bytes_unit'] &&
-                       similarLimits();
-            }
-
-            var updateQuotaDetails = function() {
-                // Validate correctness
-                if (!validLimits()) {
-                  $scope.defer.resolve();
-                  return;
-                }
-
-                let params = {
-                  'namespace': $scope.organization.name
-                };
-
-                updateOrganizationQuota(params);
-                updateQuotaLimits(params);
-                $scope.defer.resolve();
-                $scope.isUpdateable = true;
-            }
-
-            $scope.updateQuotaDetailsOnSave = function() {
-                $scope.defer = $q.defer();
-                updateQuotaDetails();
-                if ($scope.isUpdateable) {
-                    $scope.defer.promise.then(function() {
-                        loadOrgQuota(false);
-                        loadQuotaLimits(false);
-                    });
-                }
-                $scope.isUpdateable = false;
-            }
-
-            $scope.addQuotaLimit = function($event) {
-                $scope.limitCounter++;
-                let temp = {'percent_of_limit': '', 'limit_type': $scope.quotaLimitTypes[0]};
-                $scope.currentQuotaConfig['limits'].push(temp);
-                $event.preventDefault();
-            }
-
-            var populateQuotaLimit = function() {
-                $scope.limitCounter++;
-            }
-
-            $scope.removeQuotaLimit = function(index) {
-                $scope.currentQuotaConfig['limits'].splice(index, 1);
-                $scope.limitCounter--;
-            }
-
-            loadOrgQuota(true);
-            loadQuotaLimits(true);
+        for (const key in units) {
+          byte_unit = units[key];
+          result = Math.round(bytes / $scope.disk_size_units[byte_unit]);
+          if (bytes >= $scope.disk_size_units[byte_unit]) {
+            return {result, byte_unit};
+          }
         }
-    }
+        return {result, byte_unit};
+      };
 
-    return directiveDefinitionObject;
+      var updateOrganizationQuota = function (params) {
+        let limit_bytes = humanReadableStringToBytes($scope.currentQuotaConfig['quota'], $scope.currentQuotaConfig['byte_unit']);
+        let data = {'limit_bytes': limit_bytes};
+        let quotaMethod = null;
+
+        if (!$scope.prevquotaEnabled ||
+          $scope.prevQuotaConfig['quota'] != $scope.currentQuotaConfig['quota'] ||
+          $scope.prevQuotaConfig['byte_unit'] != $scope.currentQuotaConfig['byte_unit']) {
+
+          if ($scope.prevquotaEnabled && !$scope.using_default_config) {
+
+            if ($scope.view == "super-user") {
+              quotaMethod = ApiService.changeOrganizationQuotaSuperUser;
+            } else {
+              quotaMethod = ApiService.changeOrganizationQuota;
+            }
+
+          } else {
+
+            if ($scope.view == "super-user") {
+              quotaMethod = ApiService.createOrganizationQuotaSuperUser;
+            } else {
+              quotaMethod = ApiService.createOrganizationQuota;
+            }
+
+          }
+
+          quotaMethod(data, params).then((resp) => {
+            loadOrgQuota();
+          }, function (resp) {
+            handleError(resp)
+          });
+        }
+      }
+
+      var displayError = function (message = 'Could not update quota details') {
+        $scope.updating = true;
+        let errorDisplay = ApiService.errorDisplay(message, () => {
+          $scope.updating = false;
+        });
+        return errorDisplay;
+      }
+
+      var validLimits = function () {
+        let valid = true;
+        let rejectCount = 0;
+        for (let i = 0; i < $scope.currentQuotaConfig['limits'].length; i++) {
+          if ($scope.currentQuotaConfig['limits'][i]['type'] === $scope.rejectLimitType) {
+            rejectCount++;
+
+            if (rejectCount > 1) {
+              let alert = displayError('You can only have one Reject type of Quota Limits. Please remove to proceed');
+              alert();
+              valid = false;
+              break;
+            }
+          }
+
+        }
+        return valid;
+      }
+
+      $scope.updateQuotaConfig = function () {
+        // Validate correctness
+        if (!validLimits()) {
+          $scope.defer.resolve();
+          return;
+        }
+
+        let params = {
+          'quota_id': $scope.currentQuotaConfig.id,
+        };
+
+        if ($scope.view == 'super-user') {
+          params['namespace'] = $scope.organization.name;
+        } else {
+          params['orgname'] = $scope.organization.name;
+        }
+
+        updateOrganizationQuota(params);
+      }
+
+      $scope.addQuotaLimit = function () {
+        var params = {
+          'orgname': $scope.organization.name,
+          'quota_id': $scope.currentQuotaConfig.id,
+        };
+
+        var data = {
+          'type': $scope.newLimitConfig['type'],
+          'threshold_percent': $scope.newLimitConfig['limit_percent'],
+        };
+
+        ApiService.createOrganizationQuotaLimit(data, params).then((resp) => {
+          if (!rejectLimitExists()) {
+            $scope.newLimitConfig = {"limit_percent": 100, "type": $scope.rejectLimitType};
+          } else {
+            $scope.newLimitConfig['type'] = null;
+            $scope.newLimitConfig['limit_percent'] = null;
+          }
+          loadOrgQuota();
+        });
+      }
+
+      $scope.updateQuotaLimit = function (limitId) {
+        var params = {
+          'orgname': $scope.organization.name,
+          'quota_id': $scope.currentQuotaConfig.id,
+          'limit_id': limitId,
+        };
+
+        var data = {
+          'type': $scope.currentQuotaConfig['limits'][limitId]['type'],
+          'threshold_percent': $scope.currentQuotaConfig['limits'][limitId]['limit_percent'],
+        };
+
+        ApiService.changeOrganizationQuotaLimit(data, params).then((resp) => {
+          $scope.prevQuotaConfig['limits'][limitId]['type'] = $scope.currentQuotaConfig['limits'][limitId]['type'];
+          $scope.prevQuotaConfig['limits'][limitId]['limit_percent'] = $scope.currentQuotaConfig['limits'][limitId]['limit_percent'];
+        }, function (resp) {
+          handleError(resp);
+        }
+        );
+      }
+
+      $scope.deleteQuotaLimit = function (limitId) {
+        const params = {
+          'orgname': $scope.organization.name,
+          'quota_id': $scope.currentQuotaConfig.id,
+          'limit_id': limitId,
+        }
+
+        ApiService.deleteOrganizationQuotaLimit(null, params).then((resp) => {
+          delete $scope.currentQuotaConfig['limits'][limitId];
+          delete $scope.prevQuotaConfig['limits'][limitId];
+          populateDefaultQuotaLimits();
+        }, function (resp) {
+          handleError(resp);
+        });
+      }
+
+      let displayErrorAlert = function (message) {
+        bootbox.alert(message);
+      }
+
+      let handleError = function (resp) {
+        if (resp.status == 403) {
+          displayErrorAlert("You do not have sufficient permissions to perform the action.");
+        } else {
+          displayErrorAlert(resp.data.error_message);
+        }
+      }
+
+      $scope.disableSaveQuota = function () {
+        // If quota exists and if user is in organization settings, cannot update the settings.
+        if ($scope.prevquotaEnabled && $scope.view == "organization-view") {
+          return true;
+        }
+
+        if (($scope.quota_limit_error && $scope.errorMessage != "") || !validOrgQuota()) {
+          return true;
+        }
+
+        checkForWarnings();
+        return $scope.prevQuotaConfig['quota'] === $scope.currentQuotaConfig['quota'] &&
+          $scope.prevQuotaConfig['byte_unit'] === $scope.currentQuotaConfig['byte_unit'];
+      }
+
+      $scope.disableDeleteQuota = function () {
+        // Cannot delete from organization settings page
+        if ($scope.view == "organization-view") {
+          return true;
+        }
+      }
+
+      $scope.disableUpdateQuota = function (limitId) {
+        // Cannot update from organization settings page
+        if ($scope.view == "organization-view") {
+          return true;
+        }
+
+        if (($scope.quota_limit_error && $scope.errorMessage != "") || !validOrgQuotaLimit($scope.currentQuotaConfig['limits'][limitId]['limit_percent'])) {
+          return true;
+        }
+        return $scope.prevQuotaConfig['limits'][limitId]['type'] === $scope.currentQuotaConfig['limits'][limitId]['type'] &&
+          $scope.prevQuotaConfig['limits'][limitId]['limit_percent'] === $scope.currentQuotaConfig['limits'][limitId]['limit_percent'];
+      }
+
+      var populateDefaultQuotaLimits = function () {
+        if (Object.keys($scope.currentQuotaConfig['limits']).length > 0) {
+          return;
+        }
+        $scope.newLimitConfig = {"limit_percent": 100, "type": $scope.rejectLimitType};
+      }
+
+      $scope.isObjectEmpty = function(obj){
+        return Object.keys(obj).length === 0;
+      }
+
+      var multipleRejectTypes = function (obj) {
+        let count = 0;
+        for (var key in obj) {
+          if (obj[key]['type'] == $scope.rejectLimitType) {
+            count++;
+          }
+          if (count > 1) {
+            return true;
+          }
+        }
+        return false;
+      }
+
+      var isOfTypeDecimal = function (value) {
+        if (value % 1 != 0) {
+          $scope.errorMessage = $scope.errorMessagesObj['decimalEntryError'];
+          return true;
+        }
+        return false;
+      }
+
+      $scope.disableAddQuotaLimit = function () {
+        // Cannot add limits without configuring quota
+        if (!$scope.currentQuotaConfig.id) {
+          return true;
+        }
+
+        $scope.quota_limit_error = true;
+
+        if ($scope.newLimitConfig['limit_percent'] != null && isNaN(parseInt($scope.newLimitConfig['limit_percent']))) {
+          $scope.errorMessage = $scope.errorMessagesObj['quotaLimitNotInRange'];
+          return true;
+        }
+
+        if (isOfTypeDecimal($scope.newLimitConfig['limit_percent'])) {
+          return true;
+        }
+
+        let temp = {};
+        temp['new'] = $scope.newLimitConfig;
+        if (multipleRejectTypes({...$scope.prevQuotaConfig['limits'], ...temp})) {
+          $scope.errorMessage = $scope.errorMessagesObj["singleRejectLimit"];
+          return true;
+        }
+
+        // Check for duplicates in Quota Limit values
+        if (duplicateExists($scope.currentQuotaConfig['limits'], $scope.newLimitConfig)) {
+          $scope.errorMessage = $scope.errorMessagesObj["identicalThresholds"];
+          updateErrorBorder(true);
+          return true;
+        }
+        else {
+          updateErrorBorder(false);
+        }
+
+        $scope.errorMessage = "";
+        $scope.quota_limit_error = false;
+        return false;
+      }
+
+      var validOrgQuotaLimit = function (limit_percent) {
+
+        if (isNaN(parseInt(limit_percent))) {
+          $scope.errorMessage = $scope.errorMessagesObj['quotaLimitNotInRange'];
+          return false;
+        }
+
+        if (isOfTypeDecimal(limit_percent)) {
+          return false;
+        }
+
+        $scope.errorMessage = '';
+        return true;
+      }
+
+      var validOrgQuota = function () {
+        // Empty state - when no quota is set. Don't throw any errors.
+        if ($scope.currentQuotaConfig['quota'] == null && !$scope.prevquotaEnabled) {
+          $scope.errorMessage = '';
+          return true;
+        }
+
+        if (isNaN(parseInt($scope.currentQuotaConfig['quota']))) {
+          $scope.errorMessage = $scope.errorMessagesObj['validNumber'];
+          return false;
+        }
+
+        if (parseInt($scope.currentQuotaConfig['quota']) <= 0) {
+          $scope.errorMessage = $scope.errorMessagesObj['quotaLessThanZero'];
+          return false;
+        }
+
+        if (isOfTypeDecimal(parseFloat($scope.currentQuotaConfig['quota']))) {
+          $scope.errorMessage = $scope.errorMessagesObj['decimalEntryError'];
+          return false;
+        }
+
+        $scope.currentQuotaConfig['quota'] = parseInt($scope.currentQuotaConfig['quota']);
+        $scope.errorMessage = '';
+
+        // Enable Apply button only if quota and the unit is selected
+        if (!$scope.currentQuotaConfig['quota'] || !$scope.currentQuotaConfig['byte_unit']) {
+          return false;
+        }
+        return true;
+      }
+
+      var checkForWarnings = function() {
+        // Do not over write existing warnings
+        if ($scope.warningMessage) {
+          return;
+        }
+
+        if (Object.keys($scope.currentQuotaConfig['limits']).length == 0) {
+          $scope.warningMessage = $scope.warningMessagesObj['noQuotaLimit'];
+          return;
+        }
+
+        if (!rejectLimitExists()) {
+          $scope.warningMessage = $scope.warningMessagesObj['noRejectLimit'];
+          return;
+        }
+
+        $scope.warningMessage = '';
+      }
+
+      var rejectLimitExists = function() {
+        if ($scope.newLimitConfig['type'] == $scope.rejectLimitType) {
+          return true;
+        }
+
+        for (var key in $scope.currentQuotaConfig['limits']) {
+          if ($scope.currentQuotaConfig['limits'][key]['type'] == $scope.rejectLimitType) {
+            return true;
+          }
+        }
+
+        return false;
+      }
+
+      $scope.deleteOrgQuota = function() {
+        if ($scope.using_default_config) {
+          bootbox.alert("The system default configuration cannot be removed.");
+          return;
+        }
+
+        let alert_msg = '';
+        if ($scope.default_config_exists) {
+          alert_msg = 'When you remove the quota storage, users will use system\'s default quota.'
+        } else {
+          alert_msg = 'When you remove the quota storage, users can consume arbitrary amount of storage resources.'
+        }
+
+        bootbox.confirm('Are you sure you want to delete quota for this organization? ' + alert_msg,
+        function(result) {
+          if (!result) {
+            return;
+          }
+
+          let handleSuccess = function() {
+            loadOrgQuota();
+            $scope.prevquotaEnabled = false;
+            $scope.prevQuotaConfig = {'quota': null, 'limits': {}};
+            $scope.currentQuotaConfig = {'quota': null, 'limits': {}};
+            $scope.newLimitConfig = {'type': null, 'limit_percent': null};
+          }
+
+          let params =  {
+            "quota_id": $scope.currentQuotaConfig.id
+          }
+          let quotaMethod = null;
+
+          if ($scope.view == "super-user") {
+            quotaMethod = ApiService.deleteOrganizationQuotaSuperUser;
+            params["namespace"] = $scope.organization.name;
+          }
+          else {
+            quotaMethod = ApiService.deleteOrganizationQuota;
+            params["orgname"] = $scope.organization.name;
+          }
+
+          quotaMethod(null, params).then((resp) => {
+            handleSuccess();
+          }, function(resp){
+            handleError(resp);
+          });
+        });
+      }
+
+
+      var duplicateExists = function(obj, toCheck) {
+        if (!obj || !toCheck) {
+          return false;
+        }
+
+        for (let key in obj) {
+          if (obj[key]['type'] === toCheck['type'] && obj[key]['limit_percent'] == toCheck['limit_percent']) {
+            return true;
+          }
+        }
+        return false;
+      }
+
+      var updateErrorBorder = function(toAdd) {
+        var limitTypeEle = document.getElementById("newQuotaLimitType");
+        var limitPercentEle = document.getElementById("newQuotaLimitPercent");
+
+        if (toAdd) {
+          limitTypeEle.classList.add("error-border");
+          limitPercentEle.classList.add("error-border");
+        }
+        else {
+          limitTypeEle.classList.remove("error-border");
+          limitPercentEle.classList.remove("error-border");
+        }
+      }
+
+      loadOrgQuota();
+    }
+  }
+  return directiveDefinitionObject;
 });

@@ -102,6 +102,7 @@ INTERNAL_ONLY_PROPERTIES = {
     "V3_UPGRADE_MODE",  # Deprecated old flag
     "ACCOUNT_RECOVERY_MODE",
     "BLOBUPLOAD_DELETION_DATE_THRESHOLD",
+    "REPO_MIRROR_TAG_ROLLBACK_PAGE_SIZE",
 }
 
 CONFIG_SCHEMA = {
@@ -1213,6 +1214,16 @@ CONFIG_SCHEMA = {
             "type": "int",
             "description": "Enables system default quota reject byte allowance for all organizations",
             "x-example": False,
+        },
+        "FEATURE_EXPORT_COMPLIANCE": {
+            "type": "boolean",
+            "description": "Use Red Hat Export Compliance Service during Red Hat SSO (only used in Quay.io)",
+            "x-example": False,
+        },
+        "EXPORT_COMPLIANCE_ENDPOINT": {
+            "type": "string",
+            "description": "The Red Hat Export Compliance Service Endpoint (only used in Quay.io)",
+            "x-example": "export-compliance.com",
         },
     },
 }

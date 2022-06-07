@@ -62,6 +62,7 @@ from data.database import (
     QuotaLimits,
     UserOrganizationQuota,
     RepositorySize,
+    ProxyCacheConfig,
 )
 from data import model
 from data.decorators import is_deprecated_model
@@ -865,10 +866,12 @@ def populate_database(minimal=False):
     QuotaType.create(name="Warning")
     QuotaType.create(name="Reject")
 
-    model.namespacequota.create_namespace_quota(org.username, 3050)
+    quota1 = model.namespacequota.create_namespace_quota(org, 3000)
+    model.namespacequota.create_namespace_quota_limit(quota1, "warning", 50)
     model.repository.force_cache_repo_size(publicrepo.id)
 
-    model.namespacequota.create_namespace_limit(org.username, 1, 50)
+    quota2 = model.namespacequota.create_namespace_quota(new_user_4, 6000)
+    model.namespacequota.create_namespace_quota_limit(quota2, "reject", 90)
 
     liborg = model.organization.create_organization(
         "library", "quay+library@devtable.com", new_user_1
@@ -884,6 +887,12 @@ def populate_database(minimal=False):
     thirdorg.save()
 
     model.user.create_robot("coolrobot", org)
+
+    proxyorg = model.organization.create_organization(
+        "proxyorg", "quay+proxyorg@devtable.com", new_user_1
+    )
+    proxyorg.save()
+    model.proxy_cache.create_proxy_cache_config(proxyorg.username, "docker.io")
 
     oauth_app_1 = model.oauth.create_application(
         org,

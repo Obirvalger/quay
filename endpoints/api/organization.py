@@ -44,12 +44,31 @@ from auth.permissions import (
 from auth.auth_context import get_authenticated_user
 from auth import scopes
 from data import model
+from data.database import ProxyCacheConfig
 from data.billing import get_plan
 from util.names import parse_robot_username
 from util.request import get_request_ip
-
+from proxy import Proxy, UpstreamRegistryError
 
 logger = logging.getLogger(__name__)
+
+
+def quota_view(quota):
+    quota_limits = list(model.namespacequota.get_namespace_quota_limit_list(quota))
+
+    return {
+        "id": quota.id,  # Generate uuid instead?
+        "limit_bytes": quota.limit_bytes,
+        "limits": [limit_view(limit) for limit in quota_limits],
+    }
+
+
+def limit_view(limit):
+    return {
+        "id": limit.id,
+        "type": limit.quota_type.name,
+        "limit_percent": limit.percent_of_limit,
+    }
 
 
 def team_view(orgname, team):
@@ -65,7 +84,7 @@ def team_view(orgname, team):
     }
 
 
-def org_view(o, teams, quota=None):
+def org_view(o, teams):
     is_admin = AdministerOrganizationPermission(o.username).can()
     is_member = OrganizationMemberPermission(o.username).can()
 
@@ -75,7 +94,6 @@ def org_view(o, teams, quota=None):
         "avatar": avatar.get_data_for_user(o),
         "is_admin": is_admin,
         "is_member": is_member,
-        "quota": quota,
     }
 
     if teams is not None:
@@ -88,6 +106,11 @@ def org_view(o, teams, quota=None):
         view["invoice_email_address"] = o.invoice_email_address
         view["tag_expiration_s"] = o.removed_tag_expiration_s
         view["is_free_account"] = o.stripe_id is None
+
+        if features.QUOTA_MANAGEMENT:
+            quotas = model.namespacequota.get_namespace_quota_list(o.username)
+            view["quotas"] = [quota_view(quota) for quota in quotas] if quotas else []
+            view["quota_report"] = model.namespacequota.get_quota_for_view(o.username)
 
     return view
 
@@ -217,15 +240,11 @@ class Organization(ApiResource):
             raise NotFound()
 
         teams = None
-        quota = None
         if OrganizationMemberPermission(orgname).can():
             has_syncing = features.TEAM_SYNCING and bool(authentication.federated_service)
             teams = model.team.get_teams_within_org(org, has_syncing)
 
-        if features.QUOTA_MANAGEMENT:
-            quota = model.namespacequota.get_org_quota_for_view(org.username)
-
-        return org_view(org, teams, quota)
+        return org_view(org, teams)
 
     @require_scope(scopes.ORG_ADMIN)
     @nickname("changeOrganizationDetails")
@@ -819,3 +838,156 @@ class OrganizationApplicationResetClientSecret(ApiResource):
 
             return app_view(application)
         raise Unauthorized()
+
+
+def proxy_cache_view(proxy_cache_config):
+    return {
+        "upstream_registry": proxy_cache_config.upstream_registry if proxy_cache_config else "",
+        "expiration_s": proxy_cache_config.expiration_s if proxy_cache_config else "",
+        "insecure": proxy_cache_config.insecure if proxy_cache_config else "",
+    }
+
+
+@resource("/v1/organization/<orgname>/proxycache")
+@path_param("orgname", "The name of the organization")
+@show_if(features.PROXY_CACHE)
+class OrganizationProxyCacheConfig(ApiResource):
+    """
+    Resource for managing Proxy Cache Config.
+    """
+
+    schemas = {
+        "NewProxyCacheConfig": {
+            "type": "object",
+            "description": "Proxy cache configuration for an organization",
+            "required": ["upstream_registry"],
+            "properties": {
+                "upstream_registry": {
+                    "type": "string",
+                    "description": "Name of the upstream registry that is to be cached",
+                },
+            },
+        },
+    }
+
+    @nickname("getProxyCacheConfig")
+    def get(self, orgname):
+        """
+        Retrieves the proxy cache configuration of the organization.
+        """
+        permission = OrganizationMemberPermission(orgname)
+        if not permission.can():
+            raise Unauthorized()
+
+        try:
+            config = model.proxy_cache.get_proxy_cache_config_for_org(orgname)
+        except model.InvalidProxyCacheConfigException:
+            return proxy_cache_view(None)
+
+        return proxy_cache_view(config)
+
+    @nickname("createProxyCacheConfig")
+    @validate_json_request("NewProxyCacheConfig")
+    def post(self, orgname):
+        """
+        Creates proxy cache configuration for the organization.
+        """
+        permission = AdministerOrganizationPermission(orgname)
+        if not permission.can():
+            raise Unauthorized()
+
+        try:
+            model.proxy_cache.get_proxy_cache_config_for_org(orgname)
+            raise request_error("Proxy Cache Configuration already exists")
+        except model.InvalidProxyCacheConfigException:
+            pass
+
+        data = request.get_json()
+        # filter None values
+        data = {k: v for k, v in data.items() if (v is not None or not "")}
+
+        try:
+            config = model.proxy_cache.create_proxy_cache_config(**data)
+            if config is not None:
+                return "Created", 201
+        except model.DataModelException as e:
+            logger.error("Error while creating Proxy cache configuration as: %s", str(e))
+
+        return request_error("Error while creating Proxy cache configuration")
+
+    @nickname("deleteProxyCacheConfig")
+    def delete(self, orgname):
+        """
+        Delete proxy cache configuration for the organization.
+        """
+        permission = AdministerOrganizationPermission(orgname)
+        if not permission.can():
+            raise Unauthorized()
+
+        try:
+            model.proxy_cache.get_proxy_cache_config_for_org(orgname)
+        except model.InvalidProxyCacheConfigException:
+            raise NotFound()
+
+        try:
+            success = model.proxy_cache.delete_proxy_cache_config(orgname)
+            if success:
+                return "Deleted", 201
+        except model.DataModelException as e:
+            logger.error("Error while deleting Proxy cache configuration as: %s", str(e))
+        raise request_error(message="Proxy Cache Configuration failed to delete")
+
+
+@resource("/v1/organization/<orgname>/validateproxycache")
+@show_if(features.PROXY_CACHE)
+class ProxyCacheConfigValidation(ApiResource):
+    """
+    Resource for validating Proxy Cache Config.
+    """
+
+    schemas = {
+        "NewProxyCacheConfig": {
+            "type": "object",
+            "description": "Proxy cache configuration for an organization",
+            "required": ["upstream_registry"],
+            "properties": {
+                "upstream_registry": {
+                    "type": "string",
+                    "description": "Name of the upstream registry that is to be cached",
+                },
+            },
+        },
+    }
+
+    @nickname("validateProxyCacheConfig")
+    @validate_json_request("NewProxyCacheConfig")
+    def post(self, orgname):
+        permission = AdministerOrganizationPermission(orgname)
+        if not permission.can():
+            raise Unauthorized()
+
+        try:
+            model.proxy_cache.get_proxy_cache_config_for_org(orgname)
+            request_error("Proxy Cache Configuration already exists")
+        except model.InvalidProxyCacheConfigException:
+            pass
+
+        data = request.get_json()
+
+        # filter None values
+        data = {k: v for k, v in data.items() if v is not None}
+
+        try:
+            config = ProxyCacheConfig(**data)
+            existing = model.organization.get_organization(orgname)
+            config.organization = existing
+
+            proxy = Proxy(config, "something-totally-fake", True)
+            response = proxy.get(f"{proxy.base_url}/v2/")
+            if response.status_code == 200:
+                return "Valid", 202
+        except UpstreamRegistryError as e:
+            raise request_error(
+                message="Failed login to remote registry. Please verify entered details and try again."
+            )
+        raise request_error(message="Failed to validate Proxy cache configuration")
