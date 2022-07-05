@@ -8,6 +8,7 @@ angular.module('quay').directive('quotaManagementView', function () {
     scope: {
       'view': '@view',
       'organization': '=organization',
+      'user': '=user',
     },
     controller: function ($scope, $timeout, $location, $element, ApiService, UserService,
                           TableService, Features, StateService, $q) {
@@ -52,9 +53,40 @@ angular.module('quay').directive('quotaManagementView', function () {
       $scope.default_config_exists = false;
       $scope.quota_limit_error = false;
 
+      let fetchSuperUSerNamespace = function () {
+          if ($scope.organization != null) {
+            return $scope.organization.name;
+          }
+          else {
+            return $scope.user.username
+          }
+      }
+
+      let fetchParams = function () {
+        if ($scope.organization != null) {
+            return {"orgname": $scope.organization.name};
+          }
+          else {
+            return {"namespace": $scope.user.username};
+          }
+      }
+
       var loadOrgQuota = function () {
-        $scope.nameSpaceResource = ApiService.listOrganizationQuota(
-          null, {'orgname': $scope.organization.name}
+        if (!Features.QUOTA_MANAGEMENT) {
+          return;
+        }
+
+        let params = null;
+        let method = null;
+        if ($scope.organization != null){
+          method = ApiService.listOrganizationQuota;
+        } else {
+          method = ApiService.listUserQuotaSuperUser;
+        }
+        params = fetchParams();
+
+        $scope.nameSpaceResource = method(
+          null, params
         ).then((resp) => {
           if (resp.length > 0) {
             const quota = resp[0];
@@ -84,8 +116,11 @@ angular.module('quay').directive('quotaManagementView', function () {
               $scope.prevquotaEnabled = true;
             }
 
-            $scope.organization.quota_report.configured_quota = quota["limit_bytes"];
-            $scope.organization.quota_report.percent_consumed = (parseInt($scope.organization.quota_report.quota_bytes) / $scope.organization.quota_report.configured_quota * 100).toFixed(2);
+            if ($scope.organization != null) {
+              $scope.organization.quota_report.configured_quota = quota["limit_bytes"];
+              $scope.organization.quota_report.percent_consumed = (parseInt($scope.organization.quota_report.quota_bytes) / $scope.organization.quota_report.configured_quota * 100).toFixed(2);
+            }
+
           }
           populateDefaultQuotaLimits();
         });
@@ -132,7 +167,7 @@ angular.module('quay').directive('quotaManagementView', function () {
             if ($scope.view == "super-user") {
               quotaMethod = ApiService.createOrganizationQuotaSuperUser;
             } else {
-              quotaMethod = ApiService.createOrganizationQuota;
+              quotaMethod = ApiService.createNamespaceQuota;
             }
 
           }
@@ -184,17 +219,16 @@ angular.module('quay').directive('quotaManagementView', function () {
         };
 
         if ($scope.view == 'super-user') {
-          params['namespace'] = $scope.organization.name;
+          params['namespace'] = fetchSuperUSerNamespace();
         } else {
           params['orgname'] = $scope.organization.name;
         }
-
         updateOrganizationQuota(params);
       }
 
       $scope.addQuotaLimit = function () {
         var params = {
-          'orgname': $scope.organization.name,
+          'orgname': fetchSuperUSerNamespace(),
           'quota_id': $scope.currentQuotaConfig.id,
         };
 
@@ -216,7 +250,7 @@ angular.module('quay').directive('quotaManagementView', function () {
 
       $scope.updateQuotaLimit = function (limitId) {
         var params = {
-          'orgname': $scope.organization.name,
+          'orgname': fetchSuperUSerNamespace(),
           'quota_id': $scope.currentQuotaConfig.id,
           'limit_id': limitId,
         };
@@ -237,7 +271,7 @@ angular.module('quay').directive('quotaManagementView', function () {
 
       $scope.deleteQuotaLimit = function (limitId) {
         const params = {
-          'orgname': $scope.organization.name,
+          'orgname': fetchSuperUSerNamespace(),
           'quota_id': $scope.currentQuotaConfig.id,
           'limit_id': limitId,
         }
@@ -465,7 +499,7 @@ angular.module('quay').directive('quotaManagementView', function () {
         bootbox.confirm('Are you sure you want to delete quota for this organization? ' + alert_msg,
         function(result) {
           if (!result) {
-            return;
+            return;loadOrgQuota
           }
 
           let handleSuccess = function() {
@@ -483,7 +517,7 @@ angular.module('quay').directive('quotaManagementView', function () {
 
           if ($scope.view == "super-user") {
             quotaMethod = ApiService.deleteOrganizationQuotaSuperUser;
-            params["namespace"] = $scope.organization.name;
+            params["namespace"] = fetchSuperUSerNamespace();
           }
           else {
             quotaMethod = ApiService.deleteOrganizationQuota;
