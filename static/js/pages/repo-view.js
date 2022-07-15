@@ -77,8 +77,8 @@
         if (resp.has_additional) {
           loadPaginatedRepositoryTags(page + 1);
         } else {
-	  $scope.viewScope.tagsLoading = false;
-	}
+          $scope.viewScope.tagsLoading = false;
+        }
       });
     };
 
@@ -193,6 +193,10 @@
 
     $scope.getImages = function(callback) {
       loadImages(callback);
+    };
+
+    $scope.isOrganization = function(namespace) {
+      return !!UserService.getOrganization(namespace);
     };
   }
 })();
