@@ -10,7 +10,7 @@ from flask import abort, request, make_response
 
 import features
 
-from app import app, ip_resolver, model_cache
+from app import app, ip_resolver, model_cache, usermanager
 from auth.auth_context import get_authenticated_context, get_authenticated_user
 from data.database import RepositoryState
 from data.model import InvalidProxyCacheConfigException
@@ -123,6 +123,16 @@ def readonly_call_allowed(func):
     Only necessary on non-GET methods.
     """
     func.__readonly_call_allowed = True
+    return func
+
+
+def restricted_user_readonly_call_allowed(func):
+    """
+    Marks a method as allowing for invocation when the registry is in a read only state.
+
+    Only necessary on non-GET methods.
+    """
+    func.__restricted_user_readonly_call_allowed = True
     return func
 
 

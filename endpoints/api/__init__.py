@@ -8,16 +8,19 @@ from functools import partial, wraps
 from flask import Blueprint, request, session
 from flask_restful import Resource, abort, Api, reqparse
 from flask_restful.utils import unpack
-from flask_restful.utils.cors import crossdomain
 from jsonschema import validate, ValidationError
 
-from app import app, authentication
+import features
+
+from app import app, authentication, usermanager
 from auth.permissions import (
     ReadRepositoryPermission,
     ModifyRepositoryPermission,
     AdministerRepositoryPermission,
     UserReadPermission,
     UserAdminPermission,
+    SuperUserPermission,
+    GlobalReadOnlySuperUserPermission,
 )
 from auth import scopes
 from auth.auth_context import (
@@ -37,11 +40,15 @@ from endpoints.exception import (
     FreshLoginRequired,
     NotFound,
 )
-from endpoints.decorators import check_anon_protection, require_xhr_from_browser, check_readonly
+from endpoints.decorators import (
+    check_anon_protection,
+    require_xhr_from_browser,
+    check_readonly,
+)
 from util.metrics.prometheus import timed_blueprint
 from util.names import parse_namespace_repository
 from util.pagination import encrypt_page_token, decrypt_page_token
-from util.request import get_request_ip
+from util.request import get_request_ip, crossorigin
 from util.timedeltastring import convert_to_timedelta
 
 from .__init__models_pre_oci import pre_oci_model as model
@@ -51,12 +58,11 @@ logger = logging.getLogger(__name__)
 api_bp = timed_blueprint(Blueprint("api", __name__))
 
 
-CROSS_DOMAIN_HEADERS = ["Authorization", "Content-Type", "X-Requested-With"]
 FRESH_LOGIN_TIMEOUT = convert_to_timedelta(app.config.get("FRESH_LOGIN_TIMEOUT", "10m"))
 
 
 class ApiExceptionHandlingApi(Api):
-    @crossdomain(origin="*", headers=CROSS_DOMAIN_HEADERS)
+    @crossorigin()
     def handle_error(self, error):
         return super(ApiExceptionHandlingApi, self).handle_error(error)
 
@@ -65,7 +71,7 @@ api = ApiExceptionHandlingApi()
 api.init_app(api_bp)
 api.decorators = [
     csrf_protect(),
-    crossdomain(origin="*", headers=CROSS_DOMAIN_HEADERS),
+    crossorigin(),
     process_oauth,
     require_xhr_from_browser,
 ]
@@ -119,7 +125,7 @@ def hide_if(value):
 
 def format_date(date):
     """
-    Output an RFC822 date format.
+    Output an RFC 2822 date format.
     """
     if date is None:
         return None
@@ -245,14 +251,38 @@ def parse_repository_name(func):
 
 class ApiResource(Resource):
     registered = False
-    method_decorators = [check_anon_protection, check_readonly]
+    method_decorators = [
+        check_anon_protection,
+        check_readonly,
+    ]
 
     def options(self):
         return None, 200
 
 
 class RepositoryParamResource(ApiResource):
-    method_decorators = [check_anon_protection, parse_repository_name, check_readonly]
+    method_decorators = [
+        check_anon_protection,
+        parse_repository_name,
+        check_readonly,
+    ]
+
+
+def disallow_for_user_namespace(func):
+    @wraps(func)
+    def wrapped(self, namespace_name, repository_name, *args, **kwargs):
+        if features.RESTRICTED_USERS:
+            user = get_authenticated_user()
+            if (
+                user is not None
+                and user.username == namespace_name
+                and usermanager.is_restricted_user(user.username)
+            ):
+                abort(403, message="Operation not allowed on restricted user owned namespace")
+
+        return func(self, namespace_name, repository_name, *args, **kwargs)
+
+    return wrapped
 
 
 def disallow_for_app_repositories(func):
@@ -281,23 +311,49 @@ def disallow_for_non_normal_repositories(func):
 
 
 def require_repo_permission(permission_class, scope, allow_public=False):
-    def wrapper(func):
-        @add_method_metadata("oauth2_scope", scope)
-        @wraps(func)
-        def wrapped(self, namespace, repository, *args, **kwargs):
-            logger.debug(
-                "Checking permission %s for repo: %s/%s", permission_class, namespace, repository
-            )
-            permission = permission_class(namespace, repository)
-            if permission.can() or (
-                allow_public and model.repository_is_public(namespace, repository)
-            ):
-                return func(self, namespace, repository, *args, **kwargs)
-            raise Unauthorized()
+    def _require_permission(allow_for_superuser=False, disallow_for_restricted_user=False):
+        def wrapper(func):
+            @add_method_metadata("oauth2_scope", scope)
+            @wraps(func)
+            def wrapped(self, namespace, repository, *args, **kwargs):
+                logger.debug(
+                    "Checking permission %s for repo: %s/%s",
+                    permission_class,
+                    namespace,
+                    repository,
+                )
 
-        return wrapped
+                user = get_authenticated_user()
 
-    return wrapper
+                if features.RESTRICTED_USERS and disallow_for_restricted_user:
+                    if (
+                        usermanager.is_restricted_user(user.username)
+                        and not SuperUserPermission().can()
+                        and not (allow_public and model.repository_is_public(namespace, repository))
+                    ):
+                        raise Unauthorized()
+
+                permission = permission_class(namespace, repository)
+                if permission.can() or (
+                    allow_public
+                    and model.repository_is_public(namespace, repository)
+                    or (allow_public and GlobalReadOnlySuperUserPermission().can())
+                ):
+                    return func(self, namespace, repository, *args, **kwargs)
+
+                if features.SUPERUSERS_FULL_ACCESS and allow_for_superuser:
+                    user = get_authenticated_user()
+
+                    if user is not None and SuperUserPermission().can():
+                        return func(self, namespace, repository, *args, **kwargs)
+
+                raise Unauthorized()
+
+            return wrapped
+
+        return wrapper
+
+    return _require_permission
 
 
 require_repo_read = require_repo_permission(ReadRepositoryPermission, scopes.READ_REPO, True)
@@ -306,27 +362,49 @@ require_repo_admin = require_repo_permission(AdministerRepositoryPermission, sco
 
 
 def require_user_permission(permission_class, scope=None):
-    def wrapper(func):
-        @add_method_metadata("oauth2_scope", scope)
-        @wraps(func)
-        def wrapped(self, *args, **kwargs):
-            user = get_authenticated_user()
-            if not user:
+    def _require_permission(allow_for_superuser=False, disallow_for_restricted_users=False):
+        def wrapper(func):
+            @add_method_metadata("oauth2_scope", scope)
+            @wraps(func)
+            def wrapped(self, *args, **kwargs):
+                user = get_authenticated_user()
+                if not user:
+                    raise Unauthorized()
+
+                if features.RESTRICTED_USERS and disallow_for_restricted_users:
+                    if (
+                        usermanager.is_restricted_user(user.username)
+                        and not SuperUserPermission().can()
+                    ):
+                        raise Unauthorized()
+
+                logger.debug("Checking permission %s for user %s", permission_class, user.username)
+                permission = permission_class(user.username)
+                if permission.can():
+                    return func(self, *args, **kwargs)
+
+                if (
+                    features.SUPERUSERS_FULL_ACCESS
+                    and allow_for_superuser
+                    and SuperUserPermission().can()
+                ):
+                    return func(self, *args, **kwargs)
+
                 raise Unauthorized()
 
-            logger.debug("Checking permission %s for user %s", permission_class, user.username)
-            permission = permission_class(user.username)
-            if permission.can():
-                return func(self, *args, **kwargs)
-            raise Unauthorized()
+            return wrapped
 
-        return wrapped
+        return wrapper
 
-    return wrapper
+    return _require_permission
 
 
 require_user_read = require_user_permission(UserReadPermission, scopes.READ_USER)
 require_user_admin = require_user_permission(UserAdminPermission, scopes.ADMIN_USER)
+
+
+def allow_if_superuser():
+    return app.config.get("FEATURE_SUPERUSERS_FULL_ACCESS", False) and SuperUserPermission().can()
 
 
 def verify_not_prod(func):

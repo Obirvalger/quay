@@ -9,7 +9,6 @@ from flask import request
 
 import features
 
-from auth.auth_context import get_authenticated_user
 from data import model
 from data.database import RepoMirrorRuleType
 from data.encryption import DecryptionFailureException
@@ -58,7 +57,6 @@ common_properties = {
     },
     "root_rule": {
         "type": "object",
-        "description": "Tag mirror rule",
         "required": ["rule_kind", "rule_value"],
         "properties": {
             "rule_kind": {
@@ -122,7 +120,7 @@ class RepoMirrorSyncNowResource(RepositoryParamResource):
     A resource for managing RepoMirrorConfig.sync_status.
     """
 
-    @require_repo_admin
+    @require_repo_admin(allow_for_superuser=True)
     @nickname("syncNow")
     def post(self, namespace_name, repository_name):
         """
@@ -156,7 +154,7 @@ class RepoMirrorSyncCancelResource(RepositoryParamResource):
     A resource for managing RepoMirrorConfig.sync_status.
     """
 
-    @require_repo_admin
+    @require_repo_admin(allow_for_superuser=True)
     @nickname("syncCancel")
     def post(self, namespace_name, repository_name):
         """
@@ -223,7 +221,7 @@ class RepoMirrorResource(RepositoryParamResource):
         },
     }
 
-    @require_repo_admin
+    @require_repo_admin(allow_for_superuser=True)
     @define_json_response("ViewMirrorConfig")
     @nickname("getRepoMirrorConfig")
     def get(self, namespace_name, repository_name):
@@ -270,7 +268,7 @@ class RepoMirrorResource(RepositoryParamResource):
             "robot_username": robot,
         }
 
-    @require_repo_admin
+    @require_repo_admin(allow_for_superuser=True)
     @nickname("createRepoMirrorConfig")
     @validate_json_request("CreateMirrorConfig")
     def post(self, namespace_name, repository_name):
@@ -322,7 +320,7 @@ class RepoMirrorResource(RepositoryParamResource):
             # TODO: Determine appropriate Response
             return {"detail": "RepoMirrorConfig already exists for this repository."}, 409
 
-    @require_repo_admin
+    @require_repo_admin(allow_for_superuser=True)
     @validate_json_request("UpdateMirrorConfig")
     @nickname("changeRepoMirrorConfig")
     def put(self, namespace_name, repository_name):

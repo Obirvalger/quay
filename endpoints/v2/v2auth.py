@@ -6,7 +6,7 @@ from cachetools.func import lru_cache
 from flask import request, jsonify
 
 import features
-from app import app, userevents, instance_keys
+from app import app, userevents, instance_keys, usermanager
 from auth.auth_context import get_authenticated_context, get_authenticated_user
 from auth.decorators import process_basic_auth
 from auth.permissions import (
@@ -139,7 +139,7 @@ def generate_registry_jwt(auth_result):
     token = generate_bearer_token(
         audience_param, subject, context, access, TOKEN_VALIDITY_LIFETIME_S, instance_keys
     )
-    return jsonify({"token": token.decode("ascii")})
+    return jsonify({"token": token})
 
 
 @lru_cache(maxsize=1)
@@ -261,49 +261,86 @@ def _authorize_or_downscope_request(scope_param, has_valid_auth_context):
                         )
                 else:
                     logger.debug("No permission to modify repository %s/%s", namespace, reponame)
+
+            # TODO(kleesc): this is getting hard to follow. Should clean this up at some point.
+            elif (
+                features.RESTRICTED_USERS
+                and user is not None
+                and usermanager.is_restricted_user(user.username)
+                and user.username == namespace
+            ):
+                logger.debug("Restricted users cannot create repository %s/%s", namespace, reponame)
+
             else:
                 if (
                     app.config.get("CREATE_NAMESPACE_ON_PUSH", False)
                     and model.user.get_namespace_user(namespace) is None
                 ):
-                    logger.debug("Creating organization: %s/%s", namespace, reponame)
-                    try:
-                        model.organization.create_organization(
-                            namespace,
-                            ("+" + namespace + "@").join(user.email.split("@")),
-                            user,
-                            email_required=features.MAILING,
+                    if features.RESTRICTED_USERS and usermanager.is_restricted_user(user.username):
+                        logger.debug(
+                            "Restricted users cannot create repository %s/%s", namespace, reponame
                         )
-                    except model.DataModelException as ex:
-                        raise Unsupported(message="Cannot create organization")
+                    else:
+                        logger.debug("Creating organization for: %s/%s", namespace, reponame)
+                        try:
+                            model.organization.create_organization(
+                                namespace,
+                                ("+" + namespace + "@").join(user.email.split("@")),
+                                user,
+                                email_required=features.MAILING,
+                            )
+                        except model.DataModelException as ex:
+                            raise Unsupported(message="Cannot create organization")
+
                 if CreateRepositoryPermission(namespace).can() and user is not None:
-                    logger.debug("Creating repository: %s/%s", namespace, reponame)
-                    visibility = (
-                        "private"
-                        if app.config.get("CREATE_PRIVATE_REPO_ON_PUSH", True)
-                        else "public"
-                    )
-                    found = model.repository.get_or_create_repository(
-                        namespace, reponame, user, visibility=visibility
-                    )
-                    if found is not None:
-                        repository_ref = RepositoryReference.for_repo_obj(found)
+                    if (
+                        features.RESTRICTED_USERS
+                        and usermanager.is_restricted_user(user.username)
+                        and user.username == namespace
+                    ):
+                        logger.debug(
+                            "Restricted users cannot create repository %s/%s", namespace, reponame
+                        )
+                    else:
+                        logger.debug("Creating repository: %s/%s", namespace, reponame)
+                        visibility = (
+                            "private"
+                            if app.config.get("CREATE_PRIVATE_REPO_ON_PUSH", True)
+                            else "public"
+                        )
+                        found = model.repository.get_or_create_repository(
+                            namespace, reponame, user, visibility=visibility
+                        )
 
-                        if repository_ref.kind != "image":
-                            raise Unsupported(message="Cannot push to an app repository")
+                        if found is not None:
+                            repository_ref = RepositoryReference.for_repo_obj(found)
 
-                        final_actions.append("push")
+                            if repository_ref.kind != "image":
+                                raise Unsupported(message="Cannot push to an app repository")
+
+                            final_actions.append("push")
                 else:
                     logger.debug("No permission to create repository %s/%s", namespace, reponame)
 
     if "pull" in requested_actions:
+        user = None
+        if (features.PROXY_CACHE or features.SUPER_USERS) and has_valid_auth_context:
+            user = get_authenticated_user()
+
         can_pullthru = False
         if features.PROXY_CACHE and model.proxy_cache.has_proxy_cache_config(namespace):
-            can_pullthru = (
-                OrganizationMemberPermission(namespace).can()
-                and get_authenticated_user() is not None
-            )
-        if ReadRepositoryPermission(namespace, reponame).can() or can_pullthru or repo_is_public:
+            can_pullthru = OrganizationMemberPermission(namespace).can() and user is not None
+
+        global_readonly_superuser = False
+        if features.SUPER_USERS and user is not None:
+            global_readonly_superuser = usermanager.is_global_readonly_superuser(user.username)
+
+        if (
+            ReadRepositoryPermission(namespace, reponame).can()
+            or can_pullthru
+            or repo_is_public
+            or global_readonly_superuser
+        ):
             if repository_ref is not None and repository_ref.kind != "image":
                 raise Unsupported(message=invalid_repo_message)
 

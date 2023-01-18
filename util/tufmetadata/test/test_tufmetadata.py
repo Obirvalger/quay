@@ -1,5 +1,6 @@
 import pytest
 import requests
+from typing import Dict, Any
 from mock import mock, patch
 
 from flask import Flask
@@ -9,7 +10,7 @@ from test.fixtures import init_db_path
 from util.tufmetadata import api
 
 
-valid_response = {
+valid_response: Dict[str, Any] = {
     "signed": {
         "type": "Targets",
         "delegations": {
@@ -95,7 +96,7 @@ valid_targets_with_delegation = {
 }
 
 
-valid_delegation = {
+valid_delegation: Dict[str, Any] = {
     "signed": {
         "_type": "Targets",
         "delegations": {"keys": {}, "roles": []},
@@ -219,8 +220,8 @@ def test_get_metadata_exception(connection_error, response_code, exception):
     client.request.side_effect = exception
     tuf_api = api.TUFMetadataAPI(app, app.config, client=client)
     tags, expiration = tuf_api.get_default_tags_with_expiration("quay", "quay")
-    assert tags == None
-    assert expiration == None
+    assert tags is None
+    assert expiration is None
 
 
 @pytest.mark.parametrize(

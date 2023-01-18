@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_SECURITY_SCANNER_V4_REINDEX_THRESHOLD = 86400  # 1 day
 
 
-IndexReportState = namedtuple("IndexReportState", ["Index_Finished", "Index_Error"])(
+IndexReportState = namedtuple("IndexReportState", ["Index_Finished", "Index_Error"])(  # type: ignore[call-arg]
     "IndexFinished", "IndexError"
 )
 
@@ -154,11 +154,6 @@ class V4SecurityScanner(SecurityScannerInterface):
         try:
             report = self._secscan_api.vulnerability_report(manifest_or_legacy_image.digest)
         except APIRequestFailure as arf:
-            try:
-                status.delete_instance()
-            except ReadOnlyModeException:
-                pass
-
             return SecurityInformationLookupResult.for_request_error(str(arf))
 
         if report is None:
@@ -450,12 +445,24 @@ def features_for(report):
     Quay Security scanner response.
     """
     features = []
+    dedupe_vulns = {}
     for pkg_id, pkg in report["packages"].items():
         pkg_env = report["environments"][pkg_id][0]
-        pkg_vulns = [
-            report["vulnerabilities"][vuln_id]
-            for vuln_id in report["package_vulnerabilities"].get(pkg_id, [])
-        ]
+        pkg_vulns = []
+        # Quay doesn't care about vulnerabilities reported from different
+        # repos so dedupe them. Key = package_name + package_version + vuln_name.
+        for vuln_id in report["package_vulnerabilities"].get(pkg_id, []):
+            vuln_key = (
+                pkg["name"]
+                + "_"
+                + pkg["version"]
+                + "_"
+                + report["vulnerabilities"][vuln_id].get("name", "")
+            )
+            if not dedupe_vulns.get(vuln_key, False):
+                pkg_vulns.append(report["vulnerabilities"][vuln_id])
+            dedupe_vulns[vuln_key] = True
+
         enrichments = (
             {
                 key: sorted(val, key=lambda x: x["baseScore"], reverse=True)[0]

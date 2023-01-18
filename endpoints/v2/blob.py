@@ -4,6 +4,7 @@ import re
 from flask import url_for, request, redirect, Response, abort as flask_abort
 
 from app import storage, app, get_app_url, model_cache
+from auth.auth_context import get_authenticated_user
 from auth.registry_jwt_auth import process_registry_jwt_auth
 from auth.permissions import ReadRepositoryPermission
 from data import database
@@ -58,7 +59,7 @@ BLOB_CONTENT_TYPE = "application/octet-stream"
 @disallow_for_account_recovery_mode
 @parse_repository_name()
 @process_registry_jwt_auth(scopes=["pull"])
-@require_repo_read
+@require_repo_read(allow_for_superuser=True)
 @anon_allowed
 @cache_control(max_age=31436000)
 @inject_registry_model()
@@ -87,7 +88,7 @@ def check_blob_exists(namespace_name, repo_name, digest, registry_model):
 @disallow_for_account_recovery_mode
 @parse_repository_name()
 @process_registry_jwt_auth(scopes=["pull"])
-@require_repo_read
+@require_repo_read(allow_for_superuser=True)
 @anon_allowed
 @check_region_blacklisted(BlobDownloadGeoBlocked)
 @cache_control(max_age=31536000)
@@ -110,7 +111,15 @@ def download_blob(namespace_name, repo_name, digest, registry_model):
     # Short-circuit by redirecting if the storage supports it.
     path = blob.storage_path
     logger.debug("Looking up the direct download URL for path: %s", path)
-    direct_download_url = storage.get_direct_download_url(blob.placements, path, get_request_ip())
+
+    # TODO (syahmed): the call below invokes a DB call to get the user
+    # optimize so we don't have to go to the DB but read from the
+    # token instead
+    user = get_authenticated_user()
+    username = user.username if user else None
+    direct_download_url = storage.get_direct_download_url(
+        blob.placements, path, get_request_ip(), username=username
+    )
     if direct_download_url:
         logger.debug("Returning direct download URL")
         resp = redirect(direct_download_url)
@@ -230,7 +239,7 @@ def _try_to_mount_blob(repository_ref, mount_blob_digest):
 @disallow_for_account_recovery_mode
 @parse_repository_name()
 @process_registry_jwt_auth(scopes=["pull", "push"])
-@require_repo_write
+@require_repo_write(allow_for_superuser=True, disallow_for_restricted_users=True)
 @anon_protect
 @check_readonly
 def start_blob_upload(namespace_name, repo_name):
@@ -301,7 +310,7 @@ def start_blob_upload(namespace_name, repo_name):
 @disallow_for_account_recovery_mode
 @parse_repository_name()
 @process_registry_jwt_auth(scopes=["pull"])
-@require_repo_write
+@require_repo_write(allow_for_superuser=True, disallow_for_restricted_users=True)
 @anon_protect
 def fetch_existing_upload(namespace_name, repo_name, upload_uuid):
     repository_ref = registry_model.lookup_repository(namespace_name, repo_name)
@@ -329,7 +338,7 @@ def fetch_existing_upload(namespace_name, repo_name, upload_uuid):
 @disallow_for_account_recovery_mode
 @parse_repository_name()
 @process_registry_jwt_auth(scopes=["pull", "push"])
-@require_repo_write
+@require_repo_write(allow_for_superuser=True, disallow_for_restricted_users=True)
 @anon_protect
 @check_readonly
 def upload_chunk(namespace_name, repo_name, upload_uuid):
@@ -369,7 +378,7 @@ def upload_chunk(namespace_name, repo_name, upload_uuid):
 @disallow_for_account_recovery_mode
 @parse_repository_name()
 @process_registry_jwt_auth(scopes=["pull", "push"])
-@require_repo_write
+@require_repo_write(allow_for_superuser=True, disallow_for_restricted_users=True)
 @anon_protect
 @check_readonly
 def monolithic_upload_or_last_chunk(namespace_name, repo_name, upload_uuid):
@@ -418,7 +427,7 @@ def monolithic_upload_or_last_chunk(namespace_name, repo_name, upload_uuid):
 @disallow_for_account_recovery_mode
 @parse_repository_name()
 @process_registry_jwt_auth(scopes=["pull", "push"])
-@require_repo_write
+@require_repo_write(allow_for_superuser=True, disallow_for_restricted_users=True)
 @anon_protect
 @check_readonly
 def cancel_upload(namespace_name, repo_name, upload_uuid):
@@ -440,7 +449,7 @@ def cancel_upload(namespace_name, repo_name, upload_uuid):
 @disallow_for_account_recovery_mode
 @parse_repository_name()
 @process_registry_jwt_auth(scopes=["pull", "push"])
-@require_repo_write
+@require_repo_write(allow_for_superuser=True, disallow_for_restricted_users=True)
 @anon_protect
 @check_readonly
 def delete_digest(namespace_name, repo_name, digest):

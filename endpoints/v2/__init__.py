@@ -10,12 +10,13 @@ from semantic_version import Spec
 
 import features
 
-from app import app, get_app_url
-from auth.auth_context import get_authenticated_context
+from app import app, get_app_url, usermanager
+from auth.auth_context import get_authenticated_context, get_authenticated_user
 from auth.permissions import (
     ReadRepositoryPermission,
     ModifyRepositoryPermission,
     AdministerRepositoryPermission,
+    SuperUserPermission,
 )
 from auth.registry_jwt_auth import process_registry_jwt_auth, get_auth_headers
 from data.registry_model import registry_model
@@ -68,7 +69,7 @@ def handle_quota_error(error):
     return _format_error_response(QuotaExceeded())
 
 
-def _format_error_response(error: Exception) -> Response:
+def _format_error_response(error: V2RegistryException) -> Response:
     response = jsonify({"errors": [error.as_dict()]})
     response.status_code = error.http_status_code
     logger.debug("sending response: %s", response.get_data())
@@ -128,44 +129,93 @@ def paginate(
 
 
 def _require_repo_permission(permission_class, scopes=None, allow_public=False):
-    def wrapper(func):
-        @wraps(func)
-        def wrapped(namespace_name, repo_name, *args, **kwargs):
-            logger.debug(
-                "Checking permission %s for repo: %s/%s",
-                permission_class,
-                namespace_name,
-                repo_name,
-            )
+    def _require_permission(allow_for_superuser=False, disallow_for_restricted_users=False):
+        def wrapper(func):
+            @wraps(func)
+            def wrapped(namespace_name, repo_name, *args, **kwargs):
+                logger.debug(
+                    "Checking permission %s for repo: %s/%s",
+                    permission_class,
+                    namespace_name,
+                    repo_name,
+                )
 
-            permission = permission_class(namespace_name, repo_name)
-            if permission.can():
-                return func(namespace_name, repo_name, *args, **kwargs)
+                # In the cases where we need to act based on the user to workaround the regular permissions
+                # and not just based on the validity of the JWT, we need to hit the database to get the user.
+                # This need to be checked before the normal permissions, in order to restrict a user's own namespace
+                if features.RESTRICTED_USERS and disallow_for_restricted_users:
+                    if allow_public:
+                        repository_ref = registry_model.lookup_repository(namespace_name, repo_name)
+                        if repository_ref is None or not repository_ref.is_public:
+                            raise Unauthorized()
 
-            repository = namespace_name + "/" + repo_name
-            if allow_public:
-                repository_ref = registry_model.lookup_repository(namespace_name, repo_name)
-                if repository_ref is None or not repository_ref.is_public:
-                    raise Unauthorized(repository=repository, scopes=scopes)
+                        if not features.ANONYMOUS_ACCESS:
+                            raise Unauthorized()
 
-                if repository_ref.kind != "image":
-                    msg = (
-                        "This repository is for managing %s and not container images."
-                        % repository_ref.kind
-                    )
-                    raise Unsupported(detail=msg)
+                        return func(namespace_name, repo_name, *args, **kwargs)
 
-                if repository_ref.is_public:
-                    if not features.ANONYMOUS_ACCESS:
-                        raise Unauthorized(repository=repository, scopes=scopes)
+                    context = get_authenticated_context()
 
+                    if (
+                        context is not None
+                        and context.authed_user is not None
+                        and context.authed_user.username == namespace_name
+                    ):
+                        if usermanager.is_restricted_user(
+                            context.authed_user.username,
+                            # include_robots=app.config["RESTRICTED_USER_INCLUDE_ROBOTS"],
+                        ) and not usermanager.is_superuser(context.authed_user.username):
+                            raise Unauthorized(detail="Disallowed for restricted users.")
+
+                permission = permission_class(namespace_name, repo_name)
+
+                if permission.can():
                     return func(namespace_name, repo_name, *args, **kwargs)
 
-            raise Unauthorized(repository=repository, scopes=scopes)
+                # Superusers' extra permissions
+                if features.SUPERUSERS_FULL_ACCESS and allow_for_superuser:
+                    context = get_authenticated_context()
 
-        return wrapped
+                    if context is not None and context.authed_user is not None:
+                        if usermanager.is_superuser(context.authed_user.username):
+                            return func(namespace_name, repo_name, *args, **kwargs)
 
-    return wrapper
+                repository = namespace_name + "/" + repo_name
+                if allow_public:
+                    repository_ref = registry_model.lookup_repository(namespace_name, repo_name)
+                    if repository_ref is None or not repository_ref.is_public:
+                        raise Unauthorized(repository=repository, scopes=scopes)
+
+                    if repository_ref.kind != "image":
+                        msg = (
+                            "This repository is for managing %s and not container images."
+                            % repository_ref.kind
+                        )
+                        raise Unsupported(detail=msg)
+
+                    if repository_ref.is_public:
+                        if not features.ANONYMOUS_ACCESS:
+                            raise Unauthorized(repository=repository, scopes=scopes)
+
+                        return func(namespace_name, repo_name, *args, **kwargs)
+
+                    # Allow public imply a RepositoryRead scope, so we can grant superusers read-only access
+                    if features.SUPER_USERS and app.config.get("GLOBAL_READONLY_SUPER_USERS"):
+                        context = get_authenticated_context()
+                        if (
+                            context is not None
+                            and context.authed_user is not None
+                            and usermanager.is_global_readonly_superuser(context.authed_user)
+                        ):
+                            return func(namespace_name, repo_name, *args, **kwargs)
+
+                raise Unauthorized(repository=repository, scopes=scopes)
+
+            return wrapped
+
+        return wrapper
+
+    return _require_permission
 
 
 require_repo_read = _require_repo_permission(

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
+
 from typing import Callable
+from peewee import Select, fn
 
 import features
 from app import app, storage
 from data.database import (
+    db,
     get_epoch_timestamp_ms,
     db_disallow_replica_use,
     db_transaction,
@@ -53,6 +57,7 @@ from image.docker.schema1 import (
 from proxy import Proxy, UpstreamRegistryError
 from util.bytes import Bytes
 
+logger = logging.getLogger(__name__)
 
 ACCEPTED_MEDIA_TYPES = [
     OCI_IMAGE_MANIFEST_CONTENT_TYPE,
@@ -114,7 +119,9 @@ class ProxyModel(OCIModel):
                 raise RepositoryDoesNotExist(str(e))
             return None
 
-        repo = create_repository(namespace_name, repo_name, self._user)
+        visibility = "private" if app.config.get("CREATE_PRIVATE_REPO_ON_PUSH", True) else "public"
+
+        repo = create_repository(namespace_name, repo_name, self._user, visibility=visibility)
         return RepositoryReference.for_repo_obj(
             repo,
             namespace_name,
@@ -122,6 +129,49 @@ class ProxyModel(OCIModel):
             repo.namespace_user.stripe_id is None if repo else None,
             state=repo.state if repo is not None else None,
         )
+
+    def _check_image_upload_possible_or_prune(
+        self, repo_ref: RepositoryReference, upstream_manifest: ManifestInterface
+    ) -> None:
+        """
+        Checks whether the given image fits within the quota size for the namespace
+        the repository is part of. If it doesn't, it prunes older tags in the namespace
+        by marking them expired which is eventually garbage collected by the gc worker.
+
+        Raises QuotaExceededException if the given tag is larger than the max quota
+        allotted for the namespace or if there are not enough tags to prune to free up space.
+        """
+        if upstream_manifest.is_manifest_list:
+            return
+
+        curr_ns_size = namespacequota.get_namespace_size(repo_ref.namespace_name)
+
+        # if quota limit is not set for the namespace, skip auto pruning of images
+        quotas = namespacequota.get_namespace_quota_list(repo_ref.namespace_name)
+        if quotas:
+            # currently only one quota per namespace is supported
+            ns_quota_limit = quotas[0].limit_bytes
+        else:
+            logger.info("No quota configured")
+            return
+
+        image_size = upstream_manifest.layers_compressed_size
+        if image_size > ns_quota_limit:
+            raise QuotaExceededException
+
+        if (curr_ns_size + image_size) <= ns_quota_limit:
+            return
+
+        tags = oci.tag.get_tag_with_least_lifetime_end_for_ns(repo_ref.namespace_name)
+        if tags is not None:
+            for tag in tags:
+                oci.tag.delete_tag(tag.repository_id, tag.name)
+                repository.force_cache_repo_size(tag.repository_id)
+                curr_ns_size = namespacequota.get_namespace_size(repo_ref.namespace_name)
+                if (curr_ns_size + image_size) <= ns_quota_limit:
+                    return
+        # if we got here, then there aren't enough tags in the namespace to expire, so we raise an exception
+        raise QuotaExceededException
 
     def lookup_manifest_by_digest(
         self,
@@ -137,6 +187,9 @@ class ProxyModel(OCIModel):
 
         If a manifest with the digest does not exist, fetches the manifest upstream
         and creates it with a temp tag.
+
+        Raises QuotaExceededException if the given tag is larger than the max quota
+        allotted for the namespace or if there are not enough tags to prune.
         """
         wrapped_manifest = super().lookup_manifest_by_digest(
             repository_ref, manifest_digest, allow_dead=True, require_available=False
@@ -163,8 +216,8 @@ class ProxyModel(OCIModel):
                 manifest_digest,
                 self._create_manifest_with_temp_tag,
             )
-        except ManifestDoesNotExist as e:
-            raise e
+        except ManifestDoesNotExist:
+            raise
         except UpstreamRegistryError:
             # when the upstream fetch fails, we only return the tag if
             # it isn't yet expired. note that we don't bump the tag's
@@ -183,13 +236,21 @@ class ProxyModel(OCIModel):
                 oci.tag.set_tag_end_ms(db_tag, new_expiration)
                 # if the manifest is a child of a manifest list in this repo, renew
                 # the parent(s) manifest list tag too.
-                links = ManifestChild.select(ManifestChild.manifest_id).where(
-                    (ManifestChild.repository_id == repository_ref.id)
-                    & (ManifestChild.child_manifest_id == wrapped_manifest.id)
+                # select tag ids by most recent lifetime_end_ms uniquely by name,
+                # based on the link between sub-manifest and parent manifest in the
+                # manifest link.
+                q = (
+                    TagTable.select(fn.MAX(TagTable.id).alias("id"))
+                    .join(ManifestChild, on=(TagTable.manifest_id == ManifestChild.manifest_id))
+                    .where(
+                        (ManifestChild.repository_id == repository_ref.id)
+                        & (ManifestChild.child_manifest_id == wrapped_manifest.id)
+                    )
+                    .group_by(TagTable.name)
                 )
-                parent_ids = [link.manifest_id for link in links]
+                tag_ids = [item for item in q]
                 TagTable.update(lifetime_end_ms=new_expiration).where(
-                    TagTable.manifest_id.in_(parent_ids)
+                    TagTable.id.in_(tag_ids)
                 ).execute()
 
         return super().lookup_manifest_by_digest(
@@ -209,6 +270,9 @@ class ProxyModel(OCIModel):
         from upstream, and creates them both.
         If tag and manifest exists and the manifest is a placeholder, pull the
         upstream manifest and save it locally.
+
+        Raises QuotaExceededException if the given tag is larger than the max quota
+        allotted for the namespace or if there are not enough tags to prune.
         """
         db_tag = oci.tag.get_current_tag(repository_ref.id, tag_name)
         existing_tag = Tag.for_tag(db_tag, self._legacy_image_id_handler)
@@ -258,15 +322,6 @@ class ProxyModel(OCIModel):
         if features.QUOTA_MANAGEMENT:
             repository.force_cache_repo_size(repo_ref.id)
 
-    def _enforce_repository_quota(self, repo_ref: RepositoryReference) -> None:
-        if features.QUOTA_MANAGEMENT:
-            quota = namespacequota.verify_namespace_quota(repo_ref)
-            if quota["severity_level"] == "Warning":
-                namespacequota.notify_organization_admins(repo_ref, "quota_warning")
-            elif quota["severity_level"] == "Reject":
-                namespacequota.notify_organization_admins(repo_ref, "quota_error")
-                raise QuotaExceededException
-
     def _create_and_tag_manifest(
         self,
         repo_ref: RepositoryReference,
@@ -284,7 +339,6 @@ class ProxyModel(OCIModel):
         or the retrieved manifest is invalid (for docker manifest schema v1).
         """
         self._proxy.manifest_exists(manifest_ref, ACCEPTED_MEDIA_TYPES)
-        self._enforce_repository_quota(repo_ref)
         upstream_manifest = self._pull_upstream_manifest(repo_ref.name, manifest_ref)
         manifest, tag = create_manifest_fn(repo_ref, upstream_manifest, manifest_ref)
         return manifest, tag
@@ -319,23 +373,29 @@ class ProxyModel(OCIModel):
         """
         upstream_manifest = None
         upstream_digest = self._proxy.manifest_exists(manifest_ref, ACCEPTED_MEDIA_TYPES)
-        up_to_date = manifest.digest == upstream_digest
 
         # manifest_exists will return an empty/None digest when the upstream
         # registry omits the docker-content-digest header.
         if not upstream_digest:
             upstream_manifest = self._pull_upstream_manifest(repo_ref.name, manifest_ref)
-            up_to_date = manifest.digest == upstream_manifest.digest
+            upstream_digest = upstream_manifest.digest
+
+        logger.debug(f"Found upstream manifest with digest {upstream_digest}, {manifest_ref=}")
+        up_to_date = manifest.digest == upstream_digest
 
         placeholder = manifest.internal_manifest_bytes.as_unicode() == ""
         if up_to_date and not placeholder:
+            if tag.expired:
+                if upstream_manifest is None:
+                    upstream_manifest = self._pull_upstream_manifest(repo_ref.name, manifest_ref)
+                self._check_image_upload_possible_or_prune(repo_ref, upstream_manifest)
             return tag, False
 
         if upstream_manifest is None:
             upstream_manifest = self._pull_upstream_manifest(repo_ref.name, manifest_ref)
 
-        self._enforce_repository_quota(repo_ref)
         if up_to_date and placeholder:
+            self._check_image_upload_possible_or_prune(repo_ref, upstream_manifest)
             with db_disallow_replica_use():
                 with db_transaction():
                     q = ManifestTable.update(
@@ -359,6 +419,10 @@ class ProxyModel(OCIModel):
         """
         Creates a manifest in the given repository.
 
+        Also checks whether the given image size is within the quota limit
+        of the namespace the repository is part of. If not, it prunes older tags.
+        Raises QuotaExceededException if there are not enough tags to prune.
+
         Also creates placeholders for the objects referenced by the manifest.
         For manifest lists, creates placeholder sub-manifests. For regular
         manifests, creates placeholder blobs.
@@ -369,6 +433,8 @@ class ProxyModel(OCIModel):
 
         Returns a reference to the (created manifest, tag) or (None, None) on error.
         """
+        self._check_image_upload_possible_or_prune(repository_ref, manifest)
+
         with db_disallow_replica_use():
             with db_transaction():
                 db_manifest = oci.manifest.lookup_manifest(
@@ -428,6 +494,17 @@ class ProxyModel(OCIModel):
         manifest: ManifestInterface,
         manifest_ref: str | None = None,
     ) -> tuple[Manifest | None, Tag | None]:
+        """
+        Creates a manifest in the given repository. Also creates placeholders for the
+        objects referenced by the manifest. For manifest lists, it creates
+        sub manifests entries attached to the manifest list along with a temporary tag.
+
+        Also checks whether the given image size is within the quota limit
+        of the namespace the repository is part of. If not, it prunes older tags.
+        Raises QuotaExceededException if there are not enough tags to prune.
+        """
+        self._check_image_upload_possible_or_prune(repository_ref, manifest)
+
         with db_disallow_replica_use():
             with db_transaction():
                 db_manifest = oci.manifest.create_manifest(repository_ref.id, manifest)
@@ -498,12 +575,11 @@ class ProxyModel(OCIModel):
 
         return super().get_repo_blob_by_digest(repository_ref, blob_digest, include_placements)
 
-    def _download_blob(self, repo_ref: RepositoryReference, digest: str) -> int:
+    def _download_blob(self, repo_ref: RepositoryReference, digest: str) -> None:
         """
         Download blob from upstream registry and perform a monolitic upload to
         Quay's own storage.
         """
-        self._enforce_repository_quota(repo_ref)
         expiration = (
             self._config.expiration_s
             if self._config.expiration_s

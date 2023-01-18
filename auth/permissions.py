@@ -7,7 +7,7 @@ from functools import partial
 from flask_principal import identity_loaded, Permission, Identity, identity_changed
 
 
-from app import app, superusers
+from app import app, usermanager
 from auth import scopes
 from data import model
 
@@ -15,16 +15,19 @@ from data import model
 logger = logging.getLogger(__name__)
 
 
-_ResourceNeed = namedtuple("resource", ["type", "namespace", "name", "role"])
+_ResourceNeed = namedtuple("_ResourceNeed", ["type", "namespace", "name", "role"])
 _RepositoryNeed = partial(_ResourceNeed, "repository")
-_NamespaceWideNeed = namedtuple("namespacewide", ["type", "namespace", "role"])
+_NamespaceWideNeed = namedtuple("_NamespaceWideNeed", ["type", "namespace", "role"])
 _OrganizationNeed = partial(_NamespaceWideNeed, "organization")
 _OrganizationRepoNeed = partial(_NamespaceWideNeed, "organizationrepo")
-_TeamTypeNeed = namedtuple("teamwideneed", ["type", "orgname", "teamname", "role"])
+_TeamTypeNeed = namedtuple("_TeamTypeNeed", ["type", "orgname", "teamname", "role"])
 _TeamNeed = partial(_TeamTypeNeed, "orgteam")
-_UserTypeNeed = namedtuple("userspecificneed", ["type", "username", "role"])
+_UserTypeNeed = namedtuple("_UserTypeNeed", ["type", "username", "role"])
 _UserNeed = partial(_UserTypeNeed, "user")
-_SuperUserNeed = partial(namedtuple("superuserneed", ["type"]), "superuser")
+_SuperUserNeed = partial(namedtuple("_SuperUserNeed", ["type"]), "superuser")
+_GlobalReadOnlySuperUserNeed = partial(
+    namedtuple("_GlobalReadlOnlySuperuserNeed", ["type"]), "globalreadonlysuperuser"
+)
 
 
 REPO_ROLES = [None, "read", "write", "admin"]
@@ -147,9 +150,13 @@ class QuayDeferredPermissionUser(Identity):
 
         if (
             scopes.SUPERUSER in self._scope_set or scopes.DIRECT_LOGIN in self._scope_set
-        ) and superusers.is_superuser(user_object.username):
+        ) and usermanager.is_superuser(user_object.username):
             logger.debug("Adding superuser to user: %s", user_object.username)
             self.provides.add(_SuperUserNeed())
+
+        if usermanager.is_global_readonly_superuser(user_object.username):
+            logger.debug("Adding global readonly superuser to user: %s", user_object.username)
+            self.provides.add(_GlobalReadOnlySuperUserNeed())
 
     def _populate_namespace_wide_provides(self, user_object, namespace_filter):
         """
@@ -311,6 +318,12 @@ class SuperUserPermission(QuayPermission):
     def __init__(self):
         need = _SuperUserNeed()
         super(SuperUserPermission, self).__init__(need)
+
+
+class GlobalReadOnlySuperUserPermission(QuayPermission):
+    def __init__(self):
+        need = _GlobalReadOnlySuperUserNeed()
+        super(GlobalReadOnlySuperUserPermission, self).__init__(need)
 
 
 class UserAdminPermission(QuayPermission):

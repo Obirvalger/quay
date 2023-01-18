@@ -57,8 +57,6 @@ INTERNAL_ONLY_PROPERTIES = {
     "GARBAGE_COLLECTION_FREQUENCY",
     "PAGE_TOKEN_KEY",
     "BUILD_MANAGER",
-    "JWTPROXY_AUDIENCE",
-    "JWTPROXY_SIGNER",
     "SECURITY_SCANNER_INDEXING_MIN_ID",
     "SECURITY_SCANNER_V4_REINDEX_THRESHOLD",
     "STATIC_SITE_BUCKET",
@@ -813,6 +811,15 @@ CONFIG_SCHEMA = {
             "type": ["string", "null"],
             "description": "If recaptcha is enabled, the secret key for the Recaptcha service",
         },
+        # Pass through recaptcha for whitelisted users to support org/user creation via API
+        "RECAPTCHA_WHITELISTED_USERS": {
+            "type": "array",
+            "description": "Quay usernames of those users allowed to create org/user via API bypassing recaptcha security check",
+            "uniqueItems": True,
+            "items": {
+                "type": "string",
+            },
+        },
         # External application tokens.
         "FEATURE_APP_SPECIFIC_TOKENS": {
             "type": "boolean",
@@ -1006,6 +1013,11 @@ CONFIG_SCHEMA = {
             "type": ["string", "null"],
             "description": "Replaces the SERVER_HOSTNAME as the destination for mirroring. Defaults to unset",
             "x-example": "openshift-quay-service",
+        },
+        "REPO_MIRROR_ROLLBACK": {
+            "type": ["boolean", "null"],
+            "description": "Enables rolling repository back to previous state in the event the mirror fails. Defaults to false",
+            "x-example": "true",
         },
         # Feature Flag: V1 push restriction.
         "V1_PUSH_WHITELIST": {
@@ -1220,10 +1232,53 @@ CONFIG_SCHEMA = {
             "description": "Use Red Hat Export Compliance Service during Red Hat SSO (only used in Quay.io)",
             "x-example": False,
         },
+        "FEATURE_UI_V2": {
+            "type": "boolean",
+            "description": "Enables user to try the beta UI Environment",
+            "x-example": False,
+        },
         "EXPORT_COMPLIANCE_ENDPOINT": {
             "type": "string",
             "description": "The Red Hat Export Compliance Service Endpoint (only used in Quay.io)",
             "x-example": "export-compliance.com",
+        },
+        "CORS_ORIGIN": {
+            "type": "string",
+            "description": "Cross-Origin domain to allow requests from",
+            "x-example": "localhost:9000",
+        },
+        "FEATURE_LISTEN_IP_VERSION": {
+            "type": "string",
+            "description": "Enables IPv4, IPv6 or dual-stack networking. Defaults to `IPv4`.",
+            "x-example": "IPv4",
+        },
+        "GLOBAL_READONLY_SUPER_USERS": {
+            "type": "array",
+            "description": "Quay usernames of those super users to be granted global readonly privileges",
+            "uniqueItems": True,
+            "items": {
+                "type": "string",
+            },
+        },
+        "FEATURE_SUPERUSERS_FULL_ACCESS": {
+            "type": "boolean",
+            "description": "Grant superusers full access to repositories, registry-wide",
+            "x-example": False,
+        },
+        "FEATURE_SUPERUSERS_ORG_CREATION_ONLY": {
+            "type": "boolean",
+            "description": "Whether to only allow superusers to create organizations",
+            "x-example": False,
+        },
+        "FEATURE_RESTRICTED_USERS": {
+            "type": "boolean",
+            "description": "Grant non-whitelisted users restricted permissions",
+            "x-example": False,
+        },
+        "RESTRICTED_USERS_WHITELIST": {
+            "type": "array",
+            "description": "Whitelisted users to exclude when FEATURE_RESTRICTED_USERS is enabled",
+            "x-example": ["devtable"],
         },
     },
 }

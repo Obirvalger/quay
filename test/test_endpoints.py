@@ -6,6 +6,8 @@ import unittest
 import base64
 import zlib
 
+from parameterized import parameterized, parameterized_class
+
 from mock import patch
 from io import BytesIO
 from urllib.parse import urlencode
@@ -58,7 +60,6 @@ try:
 except ValueError:
     # This blueprint was already registered
     pass
-
 
 CSRF_TOKEN_KEY = "_csrf_token"
 CSRF_TOKEN = "123csrfforme"
@@ -396,22 +397,26 @@ class WebEndpointTestCase(EndpointTestCase):
 
 
 class OAuthTestCase(EndpointTestCase):
-    def test_authorize_nologin(self):
+    @parameterized.expand(["token", "code"])
+    def test_authorize_nologin(self, response_type):
         form = {
             "client_id": "someclient",
             "redirect_uri": "http://localhost:5000/foobar",
             "scope": "user:admin",
+            "response_type": response_type,
         }
 
         self.postResponse("web.authorize_application", form=form, with_csrf=True, expected_code=401)
 
-    def test_authorize_invalidclient(self):
+    @parameterized.expand(["token", "code"])
+    def test_authorize_invalidclient(self, response_type):
         self.login("devtable", "password")
 
         form = {
             "client_id": "someclient",
             "redirect_uri": "http://localhost:5000/foobar",
             "scope": "user:admin",
+            "response_type": response_type,
         }
 
         resp = self.postResponse(
@@ -421,13 +426,15 @@ class OAuthTestCase(EndpointTestCase):
             "http://localhost:5000/foobar?error=unauthorized_client", resp.headers["Location"]
         )
 
-    def test_authorize_invalidscope(self):
+    @parameterized.expand(["token", "code"])
+    def test_authorize_invalidscope(self, response_type):
         self.login("devtable", "password")
 
         form = {
             "client_id": "deadbeef",
             "redirect_uri": "http://localhost:8000/o2c.html",
             "scope": "invalid:scope",
+            "response_type": response_type,
         }
 
         resp = self.postResponse(
@@ -437,7 +444,8 @@ class OAuthTestCase(EndpointTestCase):
             "http://localhost:8000/o2c.html?error=invalid_scope", resp.headers["Location"]
         )
 
-    def test_authorize_invalidredirecturi(self):
+    @parameterized.expand(["token", "code"])
+    def test_authorize_invalidredirecturi(self, response_type):
         self.login("devtable", "password")
 
         # Note: Defined in initdb.py
@@ -445,11 +453,13 @@ class OAuthTestCase(EndpointTestCase):
             "client_id": "deadbeef",
             "redirect_uri": "http://some/invalid/uri",
             "scope": "user:admin",
+            "response_type": response_type,
         }
 
         self.postResponse("web.authorize_application", form=form, with_csrf=True, expected_code=400)
 
-    def test_authorize_success(self):
+    @parameterized.expand(["token", "code"])
+    def test_authorize_success(self, response_type):
         self.login("devtable", "password")
 
         # Note: Defined in initdb.py
@@ -457,14 +467,17 @@ class OAuthTestCase(EndpointTestCase):
             "client_id": "deadbeef",
             "redirect_uri": "http://localhost:8000/o2c.html",
             "scope": "user:admin",
+            "response_type": response_type,
         }
 
         resp = self.postResponse(
             "web.authorize_application", form=form, with_csrf=True, expected_code=302
         )
-        self.assertTrue("access_token=" in resp.headers["Location"])
+        expected_value = "access_token=" if response_type == "token" else "code="
+        self.assertTrue(expected_value in resp.headers["Location"])
 
-    def test_authorize_nocsrf(self):
+    @parameterized.expand(["token", "code"])
+    def test_authorize_nocsrf(self, response_type):
         self.login("devtable", "password")
 
         # Note: Defined in initdb.py
@@ -472,18 +485,21 @@ class OAuthTestCase(EndpointTestCase):
             "client_id": "deadbeef",
             "redirect_uri": "http://localhost:8000/o2c.html",
             "scope": "user:admin",
+            "response_type": response_type,
         }
 
         self.postResponse(
             "web.authorize_application", form=form, with_csrf=False, expected_code=403
         )
 
-    def test_authorize_nocsrf_withinvalidheader(self):
+    @parameterized.expand(["token", "code"])
+    def test_authorize_nocsrf_withinvalidheader(self, response_type):
         # Note: Defined in initdb.py
         form = {
             "client_id": "deadbeef",
             "redirect_uri": "http://localhost:8000/o2c.html",
             "scope": "user:admin",
+            "response_type": response_type,
         }
 
         headers = dict(authorization="Some random header")
@@ -495,12 +511,14 @@ class OAuthTestCase(EndpointTestCase):
             expected_code=401,
         )
 
-    def test_authorize_nocsrf_withbadheader(self):
+    @parameterized.expand(["token", "code"])
+    def test_authorize_nocsrf_withbadheader(self, response_type):
         # Note: Defined in initdb.py
         form = {
             "client_id": "deadbeef",
             "redirect_uri": "http://localhost:8000/o2c.html",
             "scope": "user:admin",
+            "response_type": response_type,
         }
 
         headers = dict(authorization=gen_basic_auth("devtable", "invalidpassword"))
@@ -512,12 +530,14 @@ class OAuthTestCase(EndpointTestCase):
             expected_code=401,
         )
 
-    def test_authorize_nocsrf_correctheader(self):
+    @parameterized.expand(["token", "code"])
+    def test_authorize_nocsrf_correctheader(self, response_type):
         # Note: Defined in initdb.py
         form = {
             "client_id": "deadbeef",
             "redirect_uri": "http://localhost:8000/o2c.html",
             "scope": "user:admin",
+            "response_type": response_type,
         }
 
         # Try without the client id being in the whitelist.
@@ -541,14 +561,21 @@ class OAuthTestCase(EndpointTestCase):
             with_csrf=False,
             expected_code=302,
         )
-        self.assertTrue("access_token=" in resp.headers["Location"])
 
-    def test_authorize_nocsrf_ratelimiting(self):
+        # Reset app config
+        app.config["DIRECT_OAUTH_CLIENTID_WHITELIST"] = []
+
+        expected_value = "access_token=" if response_type == "token" else "code="
+        self.assertTrue(expected_value in resp.headers["Location"])
+
+    @parameterized.expand(["token", "code"])
+    def test_authorize_nocsrf_ratelimiting(self, response_type):
         # Note: Defined in initdb.py
         form = {
             "client_id": "deadbeef",
             "redirect_uri": "http://localhost:8000/o2c.html",
             "scope": "user:admin",
+            "response_type": response_type,
         }
 
         # Try without the client id being in the whitelist a few times, making sure we eventually get rate limited.
@@ -661,7 +688,7 @@ class KeyServerTestCase(EndpointTestCase):
             service="sample service",
             kid="kid420",
             headers={
-                "Authorization": "Bearer %s" % token.decode("ascii"),
+                "Authorization": "Bearer %s" % token,
                 "Content-Type": "application/json",
             },
             data=jwk.as_dict(),
@@ -675,7 +702,7 @@ class KeyServerTestCase(EndpointTestCase):
                 service="sample_service",
                 kid="kid420",
                 headers={
-                    "Authorization": "Bearer %s" % token.decode("ascii"),
+                    "Authorization": "Bearer %s" % token,
                     "Content-Type": "application/json",
                 },
                 data=jwk.as_dict(),
@@ -694,7 +721,7 @@ class KeyServerTestCase(EndpointTestCase):
             service="sample_service",
             kid="kid6969",
             headers={
-                "Authorization": "Bearer %s" % token.decode("ascii"),
+                "Authorization": "Bearer %s" % token,
                 "Content-Type": "application/json",
             },
             data=jwk.as_dict(),
@@ -714,7 +741,7 @@ class KeyServerTestCase(EndpointTestCase):
                 service="sample_service",
                 kid="kid6969",
                 headers={
-                    "Authorization": "Bearer %s" % token.decode("ascii"),
+                    "Authorization": "Bearer %s" % token,
                     "Content-Type": "application/json",
                 },
                 data=jwk.as_dict(),
@@ -735,7 +762,7 @@ class KeyServerTestCase(EndpointTestCase):
             service="sample_service",
             kid="kid6969",
             headers={
-                "Authorization": "Bearer %s" % token.decode("ascii"),
+                "Authorization": "Bearer %s" % token,
                 "Content-Type": "application/json",
             },
             data=jwk.as_dict(),
@@ -763,7 +790,7 @@ class KeyServerTestCase(EndpointTestCase):
         # Using the credentials of our key, attempt to delete our unapproved key
         self.deleteResponse(
             "key_server.delete_service_key",
-            headers={"Authorization": "Bearer %s" % token.decode("ascii")},
+            headers={"Authorization": "Bearer %s" % token},
             expected_code=400,
             service="sample_service",
             kid="first",
@@ -797,7 +824,7 @@ class KeyServerTestCase(EndpointTestCase):
         # Using the credentials of our second key, attempt to delete our unapproved key
         self.deleteResponse(
             "key_server.delete_service_key",
-            headers={"Authorization": "Bearer %s" % token.decode("ascii")},
+            headers={"Authorization": "Bearer %s" % token},
             expected_code=403,
             service="sample_service",
             kid="second",
@@ -809,7 +836,7 @@ class KeyServerTestCase(EndpointTestCase):
         with assert_action_logged("service_key_delete"):
             self.deleteEmptyResponse(
                 "key_server.delete_service_key",
-                headers={"Authorization": "Bearer %s" % token.decode("ascii")},
+                headers={"Authorization": "Bearer %s" % token},
                 expected_code=204,
                 service="sample_service",
                 kid="second",
@@ -842,7 +869,7 @@ class KeyServerTestCase(EndpointTestCase):
         with assert_action_logged("service_key_delete"):
             self.deleteEmptyResponse(
                 "key_server.delete_service_key",
-                headers={"Authorization": "Bearer %s" % token.decode("ascii")},
+                headers={"Authorization": "Bearer %s" % token},
                 expected_code=204,
                 service="sample_service",
                 kid="unapprovedkeyhere",
@@ -875,7 +902,7 @@ class KeyServerTestCase(EndpointTestCase):
         # Using the credentials of our second key, attempt tp delete our unapproved key
         self.deleteResponse(
             "key_server.delete_service_key",
-            headers={"Authorization": "Bearer %s" % token.decode("ascii")},
+            headers={"Authorization": "Bearer %s" % token},
             expected_code=403,
             service="sample_service",
             kid="kid321",
@@ -890,7 +917,7 @@ class KeyServerTestCase(EndpointTestCase):
         with assert_action_logged("service_key_delete"):
             self.deleteEmptyResponse(
                 "key_server.delete_service_key",
-                headers={"Authorization": "Bearer %s" % token.decode("ascii")},
+                headers={"Authorization": "Bearer %s" % token},
                 expected_code=204,
                 service="sample_service",
                 kid="kid321",
@@ -909,7 +936,7 @@ class KeyServerTestCase(EndpointTestCase):
         )
         self.deleteResponse(
             "key_server.delete_service_key",
-            headers={"Authorization": "Bearer %s" % bad_token.decode("ascii")},
+            headers={"Authorization": "Bearer %s" % bad_token},
             expected_code=403,
             service="sample_service",
             kid="kid123",
@@ -919,7 +946,7 @@ class KeyServerTestCase(EndpointTestCase):
         with assert_action_logged("service_key_delete"):
             self.deleteEmptyResponse(
                 "key_server.delete_service_key",
-                headers={"Authorization": "Bearer %s" % token.decode("ascii")},
+                headers={"Authorization": "Bearer %s" % token},
                 expected_code=204,
                 service="sample_service",
                 kid="kid123",

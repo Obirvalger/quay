@@ -5,6 +5,7 @@ import features
 import logging
 import os
 from _init import CONF_DIR
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -20,19 +21,28 @@ class RHSSOOAuthService(OIDCLoginService):
         if features.EXPORT_COMPLIANCE:
             logger.debug("Attempting to hit export compliance service")
             try:
-                result = http_client.post(
+                result = requests.post(
                     app_config.get("EXPORT_COMPLIANCE_ENDPOINT"),
                     cert=(
-                        os.path.join(CONF_DIR, "export-compliance-client.crt"),
-                        os.path.join(CONF_DIR, "export-compliance-client.key"),
+                        "/conf/stack/export-compliance-client.crt",
+                        "/conf/stack/export-compliance-client.key",
                     ),
-                    verify=os.path.join(CONF_DIR, "export-compliance-ca.crt"),
                     json={"user": {"login": lusername}, "account": {"primary": True}},
                     timeout=5,
                 )
-                logger.debug("Got result from export compliance service: " + result.json())
-                if result.status_code != 200:
-                    raise OAuthLoginException(str(result.json()["errors"]))
+                logger.debug("Got result from export compliance service: " + str(result.json()))
+
+                # 200 => Endpoint was hit successfully and user was found
+                # 400 => Endpoint was hit successfully but no user was found
+                if result.status_code == 200 and result.json().get("result", "") in [
+                    "ERROR_EXPORT_CONTROL",
+                    "DOMAIN_BLOCKING",
+                    "ERROR_OFAC",
+                    "EMBARGOED_COUNTRY_BLOCK",
+                    "ERROR_T5",
+                ]:
+                    raise OAuthLoginException(str(result.json().get("description", "")))
+
             except Exception as e:
                 raise OAuthLoginException(str(e))
 

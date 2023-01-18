@@ -1,7 +1,7 @@
 import logging
 import base64
-import urllib.request, urllib.parse, urllib.error
 
+from flask import Flask
 from urllib.parse import urlparse
 from flask import abort, request
 from jsonschema import validate, ValidationError
@@ -61,7 +61,7 @@ class DownloadProxy(object):
     NGINX.
     """
 
-    def __init__(self, app, instance_keys):
+    def __init__(self, app: Flask, instance_keys):
         self.app = app
         self.instance_keys = instance_keys
 
@@ -106,7 +106,7 @@ class DownloadProxy(object):
 
         # The proxy path is of the form:
         # http(s)://registry_server/_storage_proxy/{token}/{scheme}/{hostname}/rest/of/path/here
-        encoded_token = base64.urlsafe_b64encode(token)
+        encoded_token = base64.urlsafe_b64encode(bytes(token, "utf-8"))
         proxy_url = "%s://%s/_storage_proxy/%s/%s/%s/%s" % (
             url_scheme,
             server_hostname,

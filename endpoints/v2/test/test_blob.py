@@ -76,7 +76,7 @@ class TestBlobPullThroughStorage:
             realapp.config["SERVER_HOSTNAME"], subject, context, access, 600, instance_keys
         )
         self.headers = {
-            "Authorization": f"Bearer {token.decode('ascii')}",
+            "Authorization": f"Bearer {token}",
         }
 
         if self.org is None:
@@ -219,7 +219,7 @@ class TestBlobPullThroughProxy(unittest.TestCase):
             realapp.config["SERVER_HOSTNAME"], subject, context, access, 600, instance_keys
         )
         self.headers = {
-            "Authorization": f"Bearer {token.decode('ascii')}",
+            "Authorization": f"Bearer {token}",
         }
 
         try:
@@ -310,14 +310,14 @@ class TestBlobPullThroughProxy(unittest.TestCase):
 
 
 @pytest.mark.parametrize(
-    "method, endpoint",
+    "method, endpoint, expected_count",
     [
-        ("GET", "download_blob"),
-        ("HEAD", "check_blob_exists"),
+        ("GET", "download_blob", 1),
+        ("HEAD", "check_blob_exists", 0),
     ],
 )
 @patch("endpoints.v2.blob.model_cache", InMemoryDataModelCache(TEST_CACHE_CONFIG))
-def test_blob_caching(method, endpoint, client, app):
+def test_blob_caching(method, endpoint, expected_count, client, app):
     digest = "sha256:" + hashlib.sha256(b"a").hexdigest()
     location = ImageStorageLocation.get(name="local_us")
     model.blob.store_blob_record_and_temp_link("devtable", "simple", digest, location, 1, 10000000)
@@ -343,7 +343,7 @@ def test_blob_caching(method, endpoint, client, app):
     )
 
     headers = {
-        "Authorization": "Bearer %s" % token.decode("ascii"),
+        "Authorization": "Bearer %s" % token,
     }
 
     # Run without caching to make sure the request works. This also preloads some of
@@ -361,7 +361,8 @@ def test_blob_caching(method, endpoint, client, app):
     # the blob.
     with patch("endpoints.decorators.features.PROXY_CACHE", False):
         # Subsequent requests should use the cached blob.
-        with assert_query_count(0):
+        # one query for the get_authenticated_user()
+        with assert_query_count(expected_count):
             conduct_call(
                 client,
                 "v2." + endpoint,
@@ -441,7 +442,7 @@ def test_blob_mounting(
     )
 
     headers = {
-        "Authorization": "Bearer %s" % token.decode("ascii"),
+        "Authorization": "Bearer %s" % token,
     }
 
     conduct_call(
@@ -479,7 +480,7 @@ def test_blob_upload_offset(client, app):
     )
 
     headers = {
-        "Authorization": "Bearer %s" % token.decode("ascii"),
+        "Authorization": "Bearer %s" % token,
     }
 
     # Create a blob upload request.
@@ -499,7 +500,7 @@ def test_blob_upload_offset(client, app):
     }
 
     headers = {
-        "Authorization": "Bearer %s" % token.decode("ascii"),
+        "Authorization": "Bearer %s" % token,
         "Content-Range": "13-50",
     }
 

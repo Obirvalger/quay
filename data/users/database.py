@@ -85,3 +85,15 @@ class DatabaseUsers(object):
         Never used since database has no metadata.
         """
         return {}
+
+    def is_superuser(self, username):
+        raise NotImplementedError()
+
+    def has_superusers(self):
+        raise NotImplementedError()
+
+    def is_restricted_user(self, username):
+        raise NotImplementedError()
+
+    def has_restricted_users(self):
+        raise NotImplementedError()

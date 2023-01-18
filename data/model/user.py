@@ -945,7 +945,7 @@ def _get_matching_users(
             self.robot = args[3]
 
             if organization:
-                self.is_org_member = args[3] != None
+                self.is_org_member = args[3] is not None
             else:
                 self.is_org_member = None
 
@@ -1073,6 +1073,18 @@ def get_private_repo_count(username):
         .switch(Repository)
         .join(Namespace, on=(Repository.namespace_user == Namespace.id))
         .where(Namespace.username == username, Visibility.name == "private")
+        .where(Repository.state != RepositoryState.MARKED_FOR_DELETION)
+        .count()
+    )
+
+
+def get_public_repo_count(username):
+    return (
+        Repository.select()
+        .join(Visibility)
+        .switch(Repository)
+        .join(Namespace, on=(Repository.namespace_user == Namespace.id))
+        .where(Namespace.username == username, Visibility.name == "public")
         .where(Repository.state != RepositoryState.MARKED_FOR_DELETION)
         .count()
     )
@@ -1370,6 +1382,16 @@ def list_namespace_geo_restrictions(namespace_name):
 
 def get_minimum_user_id():
     return User.select(fn.Min(User.id)).tuples().get()[0]
+
+
+def get_quay_user_from_federated_login_name(username):
+    results = FederatedLogin.select().where(FederatedLogin.metadata_json.contains(username))
+    user_id = None
+    for result in results:
+        if json.loads(result.metadata_json).get("service_username") == username:
+            user_id = result.user_id
+
+    return get_namespace_user_by_user_id(user_id) if user_id else None
 
 
 class LoginWrappedDBUser(UserMixin):

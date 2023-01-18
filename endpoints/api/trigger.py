@@ -34,6 +34,7 @@ from endpoints.api import (
     abort,
     disallow_for_app_repositories,
     disallow_for_non_normal_repositories,
+    disallow_for_user_namespace,
 )
 from endpoints.api.build import build_status_view, trigger_view, RepositoryBuildStatus
 from endpoints.api.trigger_analyzer import TriggerAnalyzer
@@ -68,7 +69,7 @@ class BuildTriggerList(RepositoryParamResource):
     Resource for listing repository build triggers.
     """
 
-    @require_repo_admin
+    @require_repo_admin(allow_for_superuser=True)
     @disallow_for_app_repositories
     @nickname("listBuildTriggers")
     def get(self, namespace_name, repo_name):
@@ -103,7 +104,7 @@ class BuildTrigger(RepositoryParamResource):
         },
     }
 
-    @require_repo_admin
+    @require_repo_admin(allow_for_superuser=True)
     @disallow_for_app_repositories
     @nickname("getBuildTrigger")
     def get(self, namespace_name, repo_name, trigger_uuid):
@@ -112,9 +113,10 @@ class BuildTrigger(RepositoryParamResource):
         """
         return trigger_view(get_trigger(trigger_uuid), can_admin=True)
 
-    @require_repo_admin
+    @require_repo_admin(allow_for_superuser=True)
     @disallow_for_app_repositories
     @disallow_for_non_normal_repositories
+    @disallow_for_user_namespace
     @nickname("updateBuildTrigger")
     @validate_json_request("UpdateTrigger")
     def put(self, namespace_name, repo_name, trigger_uuid):
@@ -143,9 +145,10 @@ class BuildTrigger(RepositoryParamResource):
 
         return trigger_view(trigger)
 
-    @require_repo_admin
+    @require_repo_admin(allow_for_superuser=True)
     @disallow_for_app_repositories
     @disallow_for_non_normal_repositories
+    @disallow_for_user_namespace
     @nickname("deleteBuildTrigger")
     def delete(self, namespace_name, repo_name, trigger_uuid):
         """
@@ -192,9 +195,10 @@ class BuildTriggerSubdirs(RepositoryParamResource):
         },
     }
 
-    @require_repo_admin
+    @require_repo_admin(allow_for_superuser=True)
     @disallow_for_app_repositories
     @disallow_for_non_normal_repositories
+    @disallow_for_user_namespace
     @nickname("listBuildTriggerSubdirs")
     @validate_json_request("BuildTriggerSubdirRequest")
     def post(self, namespace_name, repo_name, trigger_uuid):
@@ -259,9 +263,10 @@ class BuildTriggerActivate(RepositoryParamResource):
         },
     }
 
-    @require_repo_admin
+    @require_repo_admin(allow_for_superuser=True)
     @disallow_for_app_repositories
     @disallow_for_non_normal_repositories
+    @disallow_for_user_namespace
     @nickname("activateBuildTrigger")
     @validate_json_request("BuildTriggerActivateRequest")
     def post(self, namespace_name, repo_name, trigger_uuid):
@@ -370,9 +375,10 @@ class BuildTriggerAnalyze(RepositoryParamResource):
         },
     }
 
-    @require_repo_admin
+    @require_repo_admin(allow_for_superuser=True)
     @disallow_for_app_repositories
     @disallow_for_non_normal_repositories
+    @disallow_for_user_namespace
     @nickname("analyzeBuildTrigger")
     @validate_json_request("BuildTriggerAnalyzeRequest")
     def post(self, namespace_name, repo_name, trigger_uuid):
@@ -440,9 +446,10 @@ class ActivateBuildTrigger(RepositoryParamResource):
         }
     }
 
-    @require_repo_admin
+    @require_repo_admin(allow_for_superuser=True)
     @disallow_for_app_repositories
     @disallow_for_non_normal_repositories
+    @disallow_for_user_namespace
     @nickname("manuallyStartBuildTrigger")
     @validate_json_request("RunParameters")
     def post(self, namespace_name, repo_name, trigger_uuid):
@@ -489,7 +496,7 @@ class TriggerBuildList(RepositoryParamResource):
     Resource to represent builds that were activated from the specified trigger.
     """
 
-    @require_repo_admin
+    @require_repo_admin(allow_for_superuser=True)
     @disallow_for_app_repositories
     @parse_args()
     @query_param("limit", "The maximum number of builds to return", type=int, default=5)
@@ -513,9 +520,10 @@ class BuildTriggerFieldValues(RepositoryParamResource):
     Custom verb to fetch a values list for a particular field name.
     """
 
-    @require_repo_admin
+    @require_repo_admin(allow_for_superuser=True)
     @disallow_for_app_repositories
     @disallow_for_non_normal_repositories
+    @disallow_for_user_namespace
     @nickname("listTriggerFieldValues")
     def post(self, namespace_name, repo_name, trigger_uuid, field_name):
         """
@@ -558,9 +566,10 @@ class BuildTriggerSources(RepositoryParamResource):
         }
     }
 
-    @require_repo_admin
+    @require_repo_admin(allow_for_superuser=True)
     @disallow_for_app_repositories
     @disallow_for_non_normal_repositories
+    @disallow_for_user_namespace
     @nickname("listTriggerBuildSources")
     @validate_json_request("BuildTriggerSourcesRequest")
     def post(self, namespace_name, repo_name, trigger_uuid):
@@ -594,7 +603,7 @@ class BuildTriggerSourceNamespaces(RepositoryParamResource):
     Custom verb to fetch the list of namespaces (orgs, projects, etc) for the trigger config.
     """
 
-    @require_repo_admin
+    @require_repo_admin(allow_for_superuser=True)
     @disallow_for_app_repositories
     @nickname("listTriggerBuildSourceNamespaces")
     def get(self, namespace_name, repo_name, trigger_uuid):

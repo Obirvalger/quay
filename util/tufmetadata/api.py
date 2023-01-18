@@ -20,7 +20,6 @@ from util.security.registry_jwt import (
 
 
 DEFAULT_HTTP_HEADERS = {"Connection": "close"}
-MITM_CERT_PATH = "/conf/mitm.cert"
 TOKEN_VALIDITY_LIFETIME_S = 60 * 60  # 1 hour
 
 logger = logging.getLogger(__name__)
@@ -284,7 +283,7 @@ class ImplementedTUFMetadataAPI(TUFMetadataAPIInterface):
             TOKEN_VALIDITY_LIFETIME_S,
             self._instance_keys,
         )
-        return {"Authorization": "Bearer %s" % token.decode("ascii")}
+        return {"Authorization": "Bearer %s" % token}
 
     def _get(self, gun, metadata_file):
         return self._call(

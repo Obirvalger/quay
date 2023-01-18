@@ -18,6 +18,7 @@ from flask import (
     send_file,
     session,
 )
+
 from flask_login import current_user
 
 import features
@@ -50,10 +51,16 @@ from buildtrigger.basehandler import BuildTriggerHandler
 from buildtrigger.bitbuckethandler import BitbucketBuildTrigger
 from buildtrigger.customhandler import CustomBuildTrigger
 from buildtrigger.triggerutil import TriggerProviderException
+from config import frontend_visible_config
 from data import model
 from data.database import db, RepositoryTag, TagToRepositoryTag, random_string_generator, User
 from endpoints.api.discovery import swagger_route_data
-from endpoints.common import common_login, render_page_template
+from endpoints.common import (
+    common_login,
+    render_page_template,
+    get_oauth_config,
+    get_external_login_config,
+)
 from endpoints.csrf import csrf_protect, generate_csrf_token, verify_csrf
 from endpoints.decorators import (
     anon_protect,
@@ -68,9 +75,8 @@ from util.headers import parse_basic_auth
 from util.invoice import renderInvoiceToPdf
 from util.useremails import send_email_changed
 from util.registry.gzipinputstream import GzipInputStream
-from util.request import get_request_ip
+from util.request import get_request_ip, crossorigin
 from _init import ROOT_DIR
-
 
 PGP_KEY_MIMETYPE = "application/pgp-keys"
 
@@ -642,11 +648,27 @@ def authorize_application():
 
     provider = FlaskAuthorizationProvider()
     redirect_uri = request.form.get("redirect_uri", None)
+    response_type = request.form.get("response_type", "code")
     scope = request.form.get("scope", None)
     state = request.form.get("state", None)
 
     # Add the access token.
-    return provider.get_token_response("token", client_id, redirect_uri, scope=scope, state=state)
+    if response_type == "token":
+        return provider.get_token_response(
+            response_type,
+            client_id,
+            redirect_uri,
+            scope=scope,
+            state=state,
+        )
+    else:
+        return provider.get_authorization_code(
+            response_type,
+            client_id,
+            redirect_uri,
+            scope=scope,
+            state=state,
+        )
 
 
 @web.route(app.config["LOCAL_OAUTH_HANDLER"], methods=["GET"])
@@ -732,6 +754,7 @@ def request_authorization_code():
             has_dangerous_scopes=has_dangerous_scopes,
             application=oauth_app_view,
             enumerate=enumerate,
+            response_type=response_type,
             client_id=client_id,
             redirect_uri=redirect_uri,
             scope=scope,
@@ -741,11 +764,19 @@ def request_authorization_code():
 
     if response_type == "token":
         return provider.get_token_response(
-            response_type, client_id, redirect_uri, scope=scope, state=state
+            response_type,
+            client_id,
+            redirect_uri,
+            scope=scope,
+            state=state,
         )
     else:
         return provider.get_authorization_code(
-            response_type, client_id, redirect_uri, scope=scope, state=state
+            response_type,
+            client_id,
+            redirect_uri,
+            scope=scope,
+            state=state,
         )
 
 
@@ -984,3 +1015,27 @@ def user_initialize():
         response = jsonify({"message": "Failed to initialize user: " + str(ex)})
         response.status_code = 400
         return response
+
+
+@web.route("/config", methods=["GET", "OPTIONS"])
+@crossorigin(anonymous=False)
+def config():
+    response = jsonify(
+        {
+            "config": frontend_visible_config(app.config),
+            "features": features.get_features(),
+            "oauth": get_oauth_config(),
+            "external_login": get_external_login_config(),
+            "registry_state": app.config.get("REGISTRY_STATE", "normal"),
+            "account_recovery_mode": app.config.get("ACCOUNT_RECOVERY_MODE", False),
+        }
+    )
+    return response
+
+
+@web.route("/csrf_token", methods=["GET", "OPTIONS"])
+@crossorigin(anonymous=False)
+def csrf_token():
+    token = generate_csrf_token()
+    response = jsonify({"csrf_token": token})
+    return response

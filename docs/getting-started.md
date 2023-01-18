@@ -26,17 +26,25 @@ This environment can quickly setup Quay and Clair for developing and testing cha
 When utilizing the local development environment changes to your source code are automatically hot-reloaded, taking effect in real time.
 
 Beyond Docker and docker-compose, to develop Quay you will also need Python and the full set of requirements in order to successfully run the test suite.
-Python 3.8 and earlier are currently supported.
+Python 3.9 and earlier are currently supported.
 
 ## Requirements
 
  - Docker
  - docker-compose
- - Python 3.8
+ - Python 3.9
  - Node 16.12.0
  - libmagic
 
 :exclamation: Be mindful that overriding your operating system's default Python version is not a good idea. Check out [this guide](https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/8/html/configuring_basic_system_settings/assembly_installing-and-using-python_configuring-basic-system-settings) for instructions on installing Python 3 on RHEL 8, or alternatively use [pyenv](https://github.com/pyenv/pyenv#readme).
+
+Add the pre-commit hook into your `.git/hooks` directory before commiting anything. The pre-commit hook ensures that the code is correctly formatted. It uses `black` for formatting. Make sure you have it installed.
+
+```
+$ pip install black # if not already installed
+
+$ make install-pre-commit-hook
+```
 
 ## Building and Running with Docker Compose
 

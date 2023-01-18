@@ -26,7 +26,7 @@ TOKEN_REGEX = re.compile(r"\ABearer (([a-zA-Z0-9+\-_/]+\.)+[a-zA-Z0-9+\-_/]+)\Z"
 
 # ALGORITHM_WHITELIST defines a whitelist of allowed algorithms to be used in JWTs. DO NOT ADD
 # `none` here!
-ALGORITHM_WHITELIST = ["rs256", "hs256"]
+ALGORITHM_WHITELIST = ["rs256", "hs256", "rs384"]
 
 
 class _StrictJWT(PyJWT):
@@ -40,9 +40,7 @@ class _StrictJWT(PyJWT):
         defaults = super(_StrictJWT, _StrictJWT)._get_default_options()
         defaults.update(
             {
-                "require_exp": True,
-                "require_iat": True,
-                "require_nbf": True,
+                "require": ["nbf", "iat", "exp"],
                 "exp_max_s": None,
             }
         )
@@ -106,7 +104,13 @@ def decode(jwt, key="", verify=True, algorithms=None, options=None, **kwargs):
             "Algorithms `%s` are not whitelisted. Allowed: %s" % (algorithms, ALGORITHM_WHITELIST)
         )
 
-    return _StrictJWT().decode(jwt, key, verify, algorithms, options, **kwargs)
+    # verify is a legacy option in PyJWT, should be moved to options as verify_signature
+    if options is None:
+        options = {"verify_signature": verify}
+    elif "verify_signature" not in options:
+        options["verify_signature"] = verify
+
+    return _StrictJWT().decode(jwt, key, algorithms, options, **kwargs)
 
 
 def exp_max_s_option(max_exp_s):

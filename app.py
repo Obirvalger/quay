@@ -38,7 +38,7 @@ from data.model.user import LoginWrappedDBUser
 from data.queue import WorkQueue
 from data.userevent import UserEventsBuilderModule
 from data.userfiles import Userfiles
-from data.users import UserAuthentication
+from data.users import UserAuthentication, UserManager
 from data.registry_model import registry_model
 from data.secscan_model import secscan_model
 from image.oci import register_artifact_type
@@ -62,7 +62,6 @@ from util.saas.exceptionlog import Sentry
 from util.names import urn_generator
 from util.config import URLSchemeAndHostname
 from util.config.configutil import generate_secret_key
-from util.config.superusermanager import SuperUserManager
 from util.label_validator import LabelValidator
 from util.metrics.prometheus import PrometheusPlugin
 from util.repomirror.api import RepoMirrorAPI
@@ -107,7 +106,7 @@ app.config.update(environ_config)
 
 # Fix remote address handling for Flask.
 if app.config.get("PROXY_COUNT", 1):
-    app.wsgi_app = ProxyFix(app.wsgi_app, num_proxies=app.config.get("PROXY_COUNT", 1))
+    app.wsgi_app = ProxyFix(app.wsgi_app)
 
 # Allow user to define a custom storage preference for the local instance.
 _distributed_storage_preference = os.environ.get("QUAY_DISTRIBUTED_STORAGE_PREFERENCE", "").split()
@@ -260,7 +259,7 @@ sentry = Sentry(app)
 build_logs = BuildLogs(app)
 authentication = UserAuthentication(app, config_provider, OVERRIDE_CONFIG_DIRECTORY)
 userevents = UserEventsBuilderModule(app)
-superusers = SuperUserManager(app)
+usermanager = UserManager(app, authentication)
 instance_keys = InstanceKeys(app)
 label_validator = LabelValidator(app)
 build_canceller = BuildCanceller(app)
@@ -318,6 +317,14 @@ if os.path.exists(_v2_key_path):
         docker_v2_signing_key = JsonWebKey.import_key(key_file.read())
 else:
     docker_v2_signing_key = JsonWebKey.generate_key("RSA", 2048, is_private=True)
+
+# Check if georeplication is turned on and whether env. variables exist:
+if os.environ.get("QUAY_DISTRIBUTED_STORAGE_PREFERENCE") is None and app.config.get(
+    "FEATURE_STORAGE_REPLICATION", False
+):
+    raise Exception(
+        "Missing storage preference, did you perhaps forget to define QUAY_DISTRIBUTED_STORAGE_PREFERENCE variable?"
+    )
 
 # Configure the database.
 if app.config.get("DATABASE_SECRET_KEY") is None and app.config.get("SETUP_COMPLETE", False):

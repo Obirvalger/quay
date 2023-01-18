@@ -1,6 +1,7 @@
 import os
 import logging
 import copy
+import urllib
 
 from collections import namedtuple
 from datetime import datetime, timedelta, timezone
@@ -21,6 +22,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from prometheus_client import Counter
 
+from util.ipresolver import ResolvedLocation
 from util.registry import filelike
 from storage.basestorage import BaseStorageV2
 
@@ -229,7 +231,7 @@ class _CloudStorage(BaseStorageV2):
         return True
 
     def get_direct_download_url(
-        self, path, request_ip=None, expires_in=60, requires_cors=False, head=False
+        self, path, request_ip=None, expires_in=60, requires_cors=False, head=False, **kwargs
     ):
         self._initialize_cloud_conn()
         path = self._init_path(path)
@@ -589,10 +591,12 @@ class _CloudStorage(BaseStorageV2):
                 return action(*args, **kwargs)
                 break
             except botocore.exceptions.ClientError as s3re:
+                # sometimes HTTPStatusCode isn't set for some reason, so we need
+                # to protect ourselves against a KeyError.
                 if (
                     remaining_retries
-                    and s3re.response["Error"]["HTTPStatusCode"] == 200
-                    and s3re.response["Error"]["Code"] == "InternalError"
+                    and s3re.response["Error"].get("HTTPStatusCode", 0) == 200
+                    and s3re.response["Error"].get("Code", "") == "InternalError"
                 ):
                     # Weird internal error case. Retry.
                     continue
@@ -855,11 +859,11 @@ class GoogleCloudStorage(_CloudStorage):
         )
 
     def get_direct_download_url(
-        self, path, request_ip=None, expires_in=60, requires_cors=False, head=False
+        self, path, request_ip=None, expires_in=60, requires_cors=False, head=False, **kwargs
     ):
         return (
             super(GoogleCloudStorage, self)
-            .get_direct_download_url(path, request_ip, expires_in, requires_cors, head)
+            .get_direct_download_url(path, request_ip, expires_in, requires_cors, head, **kwargs)
             .replace("AWSAccessKeyId", "GoogleAccessId")
         )
 
@@ -947,13 +951,13 @@ class RadosGWStorage(_CloudStorage):
 
     # TODO remove when radosgw supports cors: http://tracker.ceph.com/issues/8718#change-38624
     def get_direct_download_url(
-        self, path, request_ip=None, expires_in=60, requires_cors=False, head=False
+        self, path, request_ip=None, expires_in=60, requires_cors=False, head=False, **kwargs
     ):
         if requires_cors:
             return None
 
         return super(RadosGWStorage, self).get_direct_download_url(
-            path, request_ip, expires_in, requires_cors, head
+            path, request_ip, expires_in, requires_cors, head, **kwargs
         )
 
     # TODO remove when radosgw supports cors: http://tracker.ceph.com/issues/8718#change-38624
@@ -997,6 +1001,7 @@ class CloudFrontedS3Storage(S3Storage):
         cloudfront_privatekey_filename,
         storage_path,
         s3_bucket,
+        s3_region,
         *args,
         **kwargs,
     ):
@@ -1004,17 +1009,18 @@ class CloudFrontedS3Storage(S3Storage):
             context, storage_path, s3_bucket, *args, **kwargs
         )
 
+        self.s3_region = s3_region
         self.cloudfront_distribution_domain = cloudfront_distribution_domain
         self.cloudfront_key_id = cloudfront_key_id
         self.cloudfront_privatekey = self._load_private_key(cloudfront_privatekey_filename)
 
     def get_direct_download_url(
-        self, path, request_ip=None, expires_in=60, requires_cors=False, head=False
+        self, path, request_ip=None, expires_in=60, requires_cors=False, head=False, **kwargs
     ):
         # If CloudFront could not be loaded, fall back to normal S3.
         if self.cloudfront_privatekey is None or request_ip is None:
             return super(CloudFrontedS3Storage, self).get_direct_download_url(
-                path, request_ip, expires_in, requires_cors, head
+                path, request_ip, expires_in, requires_cors, head, **kwargs
             )
 
         resolved_ip_info = None
@@ -1022,14 +1028,23 @@ class CloudFrontedS3Storage(S3Storage):
 
         # Lookup the IP address in our resolution table and determine whether it is under AWS.
         # If it is, then return an S3 signed URL, since we are in-network.
-        resolved_ip_info = self._context.ip_resolver.resolve_ip(request_ip)
+        # We only allow requests within the same region as cross region over AWS can incur
+        # additional traffic cost
+        resolved_ip_info: ResolvedLocation = self._context.ip_resolver.resolve_ip(request_ip)
         logger.debug("Resolved IP information for IP %s: %s", request_ip, resolved_ip_info)
-        if resolved_ip_info and resolved_ip_info.provider == "aws":
+        if (
+            resolved_ip_info
+            and resolved_ip_info.provider == "aws"
+            and resolved_ip_info.aws_region == self.s3_region
+        ):
             return super(CloudFrontedS3Storage, self).get_direct_download_url(
-                path, request_ip, expires_in, requires_cors, head
+                path, request_ip, expires_in, requires_cors, head, **kwargs
             )
 
         url = "https://%s/%s" % (self.cloudfront_distribution_domain, path)
+        if kwargs:
+            url += f"?{urllib.parse.urlencode(kwargs)}"
+
         expire_date = datetime.now() + timedelta(seconds=expires_in)
         signer = self._get_cloudfront_signer()
         signed_url = signer.generate_presigned_url(url, date_less_than=expire_date)

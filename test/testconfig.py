@@ -90,6 +90,7 @@ class TestConfig(DefaultConfig):
 
     RECAPTCHA_SITE_KEY = "somekey"
     RECAPTCHA_SECRET_KEY = "somesecretkey"
+    RECAPTCHA_WHITELISTED_USERS: List[str] = []
 
     FEATURE_APP_REGISTRY = True
     FEATURE_TEAM_SYNCING = True
@@ -101,6 +102,9 @@ class TestConfig(DefaultConfig):
 
     DATA_MODEL_CACHE_CONFIG = {
         "engine": "inmemory",
+        # OCI Conformance tests don't expect results to be cached.
+        # If we implement cache invalidation, we can enable it back.
+        "active_repo_tags_cache_ttl": "0s",
     }
 
     FEATURE_REPO_MIRROR = True

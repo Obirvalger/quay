@@ -2,8 +2,11 @@ import os
 import json
 import logging
 import subprocess
+from typing import Optional
+
 from pipes import quote
 from collections import namedtuple
+from tempfile import SpooledTemporaryFile
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +16,7 @@ SKOPEO_TIMEOUT_SECONDS = 300
 # tags: list of tags or empty list
 # stdout: stdout from skopeo subprocess
 # stderr: stderr from skopeo subprocess
-SkopeoResults = namedtuple("SkopeoCopyResults", "success tags stdout stderr")
+SkopeoResults = namedtuple("SkopeoResults", "success tags stdout stderr")
 
 
 class SkopeoMirror(object):
@@ -58,14 +61,13 @@ class SkopeoMirror(object):
 
     def tags(
         self,
-        repository,
-        rule_value,
-        username=None,
-        password=None,
-        verify_tls=True,
-        proxy=None,
-        verbose_logs=False,
-    ):
+        repository: str,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        verify_tls: bool = True,
+        proxy: Optional[dict[str, str]] = None,
+        verbose_logs: bool = False,
+    ) -> SkopeoResults:
         """
         Unless a specific tag is known, 'skopeo inspect' won't work.
 
@@ -76,24 +78,20 @@ class SkopeoMirror(object):
         args = ["/usr/bin/skopeo"]
         if verbose_logs:
             args = args + ["--debug"]
-        args = args + ["inspect", "--tls-verify=%s" % verify_tls]
+        args = args + ["list-tags", "--tls-verify=%s" % verify_tls]
         args = args + self.external_registry_credentials("--creds", username, password)
-
-        if not rule_value:
-            rule_value = []
+        args = args + [repository]
 
         all_tags = []
-        for tag in rule_value + ["latest"]:
-            result = self.run_skopeo(args + [quote("%s:%s" % (repository, tag))], proxy)
-
-            if result.success:
-                all_tags = json.loads(result.stdout)["RepoTags"]
-                if all_tags is not []:
-                    break
+        result = self.run_skopeo(args, proxy)
+        if result.success:
+            all_tags = json.loads(result.stdout)["Tags"]
 
         return SkopeoResults(result.success, all_tags, result.stdout, result.stderr)
 
-    def external_registry_credentials(self, arg, username, password):
+    def external_registry_credentials(
+        self, arg: str, username: Optional[str], password: Optional[str]
+    ) -> list[str]:
         credentials = []
         if username is not None and username != "":
             if password is not None and password != "":
@@ -117,23 +115,29 @@ class SkopeoMirror(object):
         return env
 
     def run_skopeo(self, args, proxy):
-        job = subprocess.Popen(
-            args,
-            shell=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=self.setup_env(proxy),
-            close_fds=True,
-        )
+        # Using a tempfile makes sure that if --debug is set, the stdout and stderr output
+        # doesn't get truncated by the system's pipe limit.
+        with SpooledTemporaryFile() as stdoutpipe, SpooledTemporaryFile() as stderrpipe:
+            job = subprocess.Popen(
+                args,
+                shell=False,
+                stdout=stdoutpipe,
+                stderr=stderrpipe,
+                env=self.setup_env(proxy),
+            )
 
-        try:
-            (stdout, stderr) = job.communicate(timeout=SKOPEO_TIMEOUT_SECONDS)
-        except subprocess.TimeoutExpired:
-            job.kill()
-            (stdout, stderr) = job.communicate()
-        stdout = stdout.decode("utf-8")
-        stderr = stderr.decode("utf-8")
-        logger.debug("Skopeo [STDERR]: %s" % stderr)
-        logger.debug("Skopeo [STDOUT]: %s" % stdout)
+            try:
+                job.wait(timeout=SKOPEO_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                job.kill()
+            finally:
+                stdoutpipe.seek(0)
+                stderrpipe.seek(0)
+                stdout = stdoutpipe.read().decode("utf-8")
+                stderr = stderrpipe.read().decode("utf-8")
 
-        return SkopeoResults(job.returncode == 0, [], stdout, stderr)
+                if job.returncode != 0:
+                    logger.debug("Skopeo [STDERR]: %s" % stderr)
+                    logger.debug("Skopeo [STDOUT]: %s" % stdout)
+
+                return SkopeoResults(job.returncode == 0, [], stdout, stderr)

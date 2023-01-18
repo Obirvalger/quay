@@ -23,6 +23,7 @@ from endpoints.api import (
     disallow_for_app_repositories,
     format_date,
     disallow_for_non_normal_repositories,
+    disallow_for_user_namespace,
 )
 from endpoints.exception import NotFound, InvalidRequest
 from util.names import TAG_ERROR, TAG_REGEX
@@ -63,7 +64,7 @@ class ListRepositoryTags(RepositoryParamResource):
     Resource for listing full repository tag history, alive *and dead*.
     """
 
-    @require_repo_read
+    @require_repo_read(allow_for_superuser=True)
     @disallow_for_app_repositories
     @parse_args()
     @query_param("specificTag", "Filters the tags to the specific tag.", type=str, default="")
@@ -122,9 +123,10 @@ class RepositoryTag(RepositoryParamResource):
         },
     }
 
-    @require_repo_write
+    @require_repo_write(allow_for_superuser=True)
     @disallow_for_app_repositories
     @disallow_for_non_normal_repositories
+    @disallow_for_user_namespace
     @nickname("changeTag")
     @validate_json_request("ChangeTag")
     def put(self, namespace, repository, tag):
@@ -216,9 +218,10 @@ class RepositoryTag(RepositoryParamResource):
 
         return "Updated", 201
 
-    @require_repo_write
+    @require_repo_write(allow_for_superuser=True)
     @disallow_for_app_repositories
     @disallow_for_non_normal_repositories
+    @disallow_for_user_namespace
     @nickname("deleteFullTag")
     def delete(self, namespace, repository, tag):
         """
@@ -228,7 +231,9 @@ class RepositoryTag(RepositoryParamResource):
         if repo_ref is None:
             raise NotFound()
 
-        registry_model.delete_tag(repo_ref, tag)
+        tag_ref = registry_model.delete_tag(repo_ref, tag)
+        if tag_ref is None:
+            raise NotFound()
 
         if app.config.get("FEATURE_QUOTA_MANAGEMENT", False):
             repository_model.force_cache_repo_size(repo_ref.id)
@@ -265,9 +270,10 @@ class RestoreTag(RepositoryParamResource):
         },
     }
 
-    @require_repo_write
+    @require_repo_write(allow_for_superuser=True)
     @disallow_for_app_repositories
     @disallow_for_non_normal_repositories
+    @disallow_for_user_namespace
     @nickname("restoreTag")
     @validate_json_request("RestoreTag")
     def post(self, namespace, repository, tag):

@@ -38,7 +38,7 @@ from data.database import RepositoryActionCount, Repository as RepositoryTable
 from data.logs_model import logs_model
 from data.registry_model import registry_model
 from test.helpers import assert_action_logged, check_transitive_modifications
-from util.secscan.fake import fake_security_scanner
+from util.secscan.v4.fake import fake_security_scanner
 
 from endpoints.api.team import (
     TeamMember,
@@ -813,6 +813,12 @@ class TestCreateNewUser(ApiTestCase):
                 details = dict(NEW_USER_DETAILS)
                 details["recaptcha_response"] = "somecode"
                 self.postResponse(User, data=details, expected_code=200)
+
+    def test_recaptcha_whitelisted_users(self):
+        self.login(READ_ACCESS_USER)
+        with (self.toggleFeature("RECAPTCHA", True)):
+            app.config["RECAPTCHA_WHITELISTED_USERS"] = READ_ACCESS_USER
+            self.postResponse(User, data=NEW_USER_DETAILS, expected_code=200)
 
     def test_createuser_withteaminvite(self):
         inviter = model.user.get_user(ADMIN_ACCESS_USER)
@@ -3943,7 +3949,7 @@ class TestLogs(ApiTestCase):
         json = self.getJsonResponse(UserAggregateLogs)
         assert "aggregated" in json
 
-    def test_org_logs(self):
+    def test_org_aggregate_logs(self):
         self.login(ADMIN_ACCESS_USER)
 
         json = self.getJsonResponse(OrgAggregateLogs, params=dict(orgname=ORGANIZATION))

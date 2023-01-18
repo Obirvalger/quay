@@ -293,6 +293,11 @@ class DefaultConfig(ImmutableConfig):
     # Super user config. Note: This MUST BE an empty list for the default config.
     SUPER_USERS: List[str] = []
 
+    # Global readonly user.
+    # WARNING: THIS WILL GIVE USERS OF THIS LIST READ ACCESS TO ALL REPOS,
+    # REGARDLESS OF WHETHER THEY ARE PUBLIC OR NOT
+    GLOBAL_READONLY_SUPER_USERS: List[str] = []
+
     # Feature Flag: Whether sessions are permanent.
     FEATURE_PERMANENT_SESSIONS = True
 
@@ -461,14 +466,15 @@ class DefaultConfig(ImmutableConfig):
     AVATAR_KIND = "local"
 
     # Custom branding
+    BRANDING: Dict[str, Optional[str]]
     if os.environ.get("RED_HAT_QUAY", False):
-        BRANDING: Dict[str, Optional[str]] = {
+        BRANDING = {
             "logo": "/static/img/RH_Logo_Quay_Black_UX-horizontal.svg",
             "footer_img": "/static/img/RedHat.svg",
             "footer_url": "https://access.redhat.com/documentation/en-us/red_hat_quay/3/",
         }
     else:
-        BRANDING: Dict[str, Optional[str]] = {
+        BRANDING = {
             "logo": "/static/img/quay-horizontal-color.svg",
             "footer_img": None,
             "footer_url": None,
@@ -485,7 +491,7 @@ class DefaultConfig(ImmutableConfig):
     FEATURE_SECURITY_NOTIFICATIONS = False
 
     # The endpoint for the (deprecated) V2 security scanner.
-    SECURITY_SCANNER_ENDPOINT = None
+    SECURITY_SCANNER_ENDPOINT: Optional[str] = None
 
     # The endpoint for the V4 security scanner.
     SECURITY_SCANNER_V4_ENDPOINT: Optional[str] = None
@@ -536,15 +542,6 @@ class DefaultConfig(ImmutableConfig):
     # Replaces the SERVER_HOSTNAME as the destination for mirroring.
     REPO_MIRROR_SERVER_HOSTNAME: Optional[str] = None
 
-    # JWTProxy Settings
-    # The address (sans schema) to proxy outgoing requests through the jwtproxy
-    # to be signed
-    JWTPROXY_SIGNER = "localhost:8081"
-
-    # The audience that jwtproxy should verify on incoming requests
-    # If None, will be calculated off of the SERVER_HOSTNAME (default)
-    JWTPROXY_AUDIENCE = None
-
     # "Secret" key for generating encrypted paging tokens. Only needed to be secret to
     # hide the ID range for production (in which this value is overridden). Should *not*
     # be relied upon for secure encryption otherwise.
@@ -562,14 +559,12 @@ class DefaultConfig(ImmutableConfig):
     SERVICE_LOG_ACCOUNT_ID = None
 
     # The service key ID for the instance service.
-    # NOTE: If changed, jwtproxy_conf.yaml.jnj must also be updated.
     INSTANCE_SERVICE_KEY_SERVICE = "quay"
 
     # The location of the key ID file generated for this instance.
     INSTANCE_SERVICE_KEY_KID_LOCATION = os.path.join(CONF_DIR, "quay.kid")
 
     # The location of the private key generated for this instance.
-    # NOTE: If changed, jwtproxy_conf.yaml.jnj must also be updated.
     INSTANCE_SERVICE_KEY_LOCATION = os.path.join(CONF_DIR, "quay.pem")
 
     # This instance's service key expiration in minutes.
@@ -601,6 +596,9 @@ class DefaultConfig(ImmutableConfig):
     FEATURE_RECAPTCHA = False
     RECAPTCHA_SITE_KEY: Optional[str] = None
     RECAPTCHA_SECRET_KEY: Optional[str] = None
+
+    # List of users allowed to pass through recaptcha security check to enable org/user creation via API
+    RECAPTCHA_WHITELISTED_USERS: List[str] = []
 
     # Server where TUF metadata can be found
     TUF_SERVER = None
@@ -768,6 +766,14 @@ class DefaultConfig(ImmutableConfig):
         "application/vnd.oci.image.config.v1+json": [
             "application/vnd.dev.cosign.simplesigning.v1+json",
             "application/vnd.dsse.envelope.v1+json",
+            "text/spdx",
+            "text/spdx+xml",
+            "text/spdx+json",
+            "application/vnd.syft+json",
+            "application/vnd.cyclonedx",
+            "application/vnd.cyclonedx+xml",
+            "application/vnd.cyclonedx+json",
+            "application/vnd.in-toto+json",
         ],
         "application/vnd.cncf.helm.config.v1+json": [
             "application/tar+gzip",
@@ -827,5 +833,17 @@ class DefaultConfig(ImmutableConfig):
     # Feature Flag: Use Red Hat Export Compliance Service during Red Hat SSO (only used in Quay.io)
     FEATURE_EXPORT_COMPLIANCE = False
 
+    # Feature Flag: Enables user to try the beta UI Environment
+    FEATURE_UI_V2 = False
+
     # Export Compliance Endpoint
     EXPORT_COMPLIANCE_ENDPOINT = ""
+
+    # Origin to allow for CORS requests
+    CORS_ORIGIN = "*"
+
+    FEATURE_SUPERUSERS_FULL_ACCESS = False
+    FEATURE_SUPERUSERS_ORG_CREATION_ONLY = False
+
+    FEATURE_RESTRICTED_USERS = False
+    RESTRICTED_USERS_WHITELIST: Optional[List[str]] = None

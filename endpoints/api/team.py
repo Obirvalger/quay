@@ -22,6 +22,7 @@ from auth import scopes
 from data import model
 from data.database import Team
 from endpoints.api import (
+    allow_if_superuser,
     resource,
     nickname,
     ApiResource,
@@ -211,7 +212,7 @@ class OrganizationTeam(ApiResource):
         Update the org-wide permission for the specified team.
         """
         edit_permission = AdministerOrganizationPermission(orgname)
-        if edit_permission.can():
+        if edit_permission.can() or allow_if_superuser():
             team = None
 
             details = request.get_json()
@@ -591,7 +592,7 @@ class TeamMemberInvite(ApiResource):
     Resource for managing invites to join a team.
     """
 
-    @require_user_admin
+    @require_user_admin()
     @nickname("acceptOrganizationTeamInvite")
     def put(self, code):
         """
@@ -606,7 +607,7 @@ class TeamMemberInvite(ApiResource):
         return {"org": orgname, "team": team.name}
 
     @nickname("declineOrganizationTeamInvite")
-    @require_user_admin
+    @require_user_admin()
     def delete(self, code):
         """
         Delete an existing invitation to join a team.

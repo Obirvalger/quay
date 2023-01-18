@@ -1,8 +1,10 @@
+import fnmatch
+import logging
+import logging.config
 import os
 import re
 import traceback
-import fnmatch
-import logging.config
+from typing import Optional
 
 from prometheus_client import Gauge
 
@@ -15,13 +17,12 @@ from data.model.repo_mirror import claim_mirror, release_mirror
 from data.model.user import retrieve_robot_token
 from data.logs_model import logs_model
 from data.registry_model import registry_model
-from data.database import RepoMirrorStatus
+from data.database import RepoMirrorConfig, RepoMirrorStatus
 from data.model.oci.tag import delete_tag, retarget_tag, lookup_alive_tags_shallow
 from notifications import spawn_notification
 from util.audit import wrap_repository
-
+from util.repomirror.skopeomirror import SkopeoMirror, SkopeoResults
 from workers.repomirrorworker.repo_mirror_model import repo_mirror_model as model
-
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,7 @@ def process_mirrors(skopeo, token=None):
                 )
                 abt.set()
             except Exception as e:  # TODO: define exceptions
-                logger.exception("Repository Mirror service unavailable")
+                logger.exception("Repository Mirror service unavailable: %s" % e)
                 return None
 
             unmirrored_repositories.set(num_remaining)
@@ -86,7 +87,7 @@ def process_mirrors(skopeo, token=None):
     return next_token
 
 
-def perform_mirror(skopeo, mirror):
+def perform_mirror(skopeo: SkopeoMirror, mirror: RepoMirrorConfig):
     """
     Run mirror on all matching tags of remote repository.
     """
@@ -154,6 +155,7 @@ def perform_mirror(skopeo, mirror):
     # Sync tags
     now_ms = database.get_epoch_timestamp_ms()
     overall_status = RepoMirrorStatus.SUCCESS
+    failed_tags = []
     try:
         try:
             username = (
@@ -177,11 +179,6 @@ def perform_mirror(skopeo, mirror):
         )
 
         for tag in tags:
-            reclaimed_mirror = claim_mirror(mirror)
-            if not reclaimed_mirror:
-                raise PreemptedException
-            mirror = reclaimed_mirror
-
             src_image = "docker://%s:%s" % (mirror.external_reference, tag)
             dest_image = "docker://%s/%s/%s:%s" % (
                 dest_server,
@@ -208,6 +205,7 @@ def perform_mirror(skopeo, mirror):
 
             if not result.success:
                 overall_status = RepoMirrorStatus.FAIL
+                failed_tags.append(tag)
                 emit_log(
                     mirror,
                     "repo_mirror_sync_tag_failed",
@@ -230,10 +228,6 @@ def perform_mirror(skopeo, mirror):
                 )
                 logger.info("Source '%s' successful sync." % src_image)
 
-        reclaimed_mirror = claim_mirror(mirror)
-        if not reclaimed_mirror:
-            raise PreemptedException
-        mirror = reclaimed_mirror
         delete_obsolete_tags(mirror, tags)
 
     except PreemptedException as e:
@@ -266,14 +260,37 @@ def perform_mirror(skopeo, mirror):
         return
     finally:
         if overall_status == RepoMirrorStatus.FAIL:
+            log_tags = []
+            log_message = "'%s' with tag pattern '%s'"
+
+            # Handle the case where not all tags were synced and state will not be rolled back
+            if (
+                len(failed_tags) != len(tags)
+                and len(failed_tags) > 0
+                and not app.config.get("REPO_MIRROR_ROLLBACK", False)
+            ):
+                log_message = "'%s' with tag pattern '%s': PARTIAL SYNC"
+                for tag in tags:
+                    if tag in failed_tags:
+                        tag = tag + "(FAILED)"
+                    log_tags.append(tag)
+
             emit_log(
                 mirror,
                 "repo_mirror_sync_failed",
                 "lost",
-                "'%s' with tag pattern '%s'"
-                % (mirror.external_reference, ",".join(mirror.root_rule.rule_value)),
+                log_message % (mirror.external_reference, ",".join(mirror.root_rule.rule_value)),
+                tags=", ".join(log_tags),
+                stdout="Not applicable",
+                stderr="Not applicable",
             )
-            rollback(mirror, now_ms)
+
+            # Rollback the state of repo if feature is enabled,
+            # otherwise only rollback those that failed
+            if app.config.get("REPO_MIRROR_ROLLBACK", False):
+                rollback(mirror, now_ms)
+            else:
+                rollback(mirror, now_ms, failed_tags)
         else:
             emit_log(
                 mirror,
@@ -288,12 +305,12 @@ def perform_mirror(skopeo, mirror):
     return overall_status
 
 
-def tags_to_mirror(skopeo, mirror):
+def tags_to_mirror(skopeo: SkopeoMirror, mirror: RepoMirrorConfig) -> list[str]:
     all_tags = get_all_tags(skopeo, mirror)
     if all_tags == []:
         return []
 
-    matching_tags = []
+    matching_tags: list[str] = []
     for pattern in mirror.root_rule.rule_value:
         matching_tags = matching_tags + [tag for tag in all_tags if fnmatch.fnmatch(tag, pattern)]
     matching_tags = list(set(matching_tags))
@@ -301,7 +318,7 @@ def tags_to_mirror(skopeo, mirror):
     return matching_tags
 
 
-def get_all_tags(skopeo, mirror):
+def get_all_tags(skopeo: SkopeoMirror, mirror: RepoMirrorConfig) -> list[str]:
     verbose_logs = os.getenv("DEBUGLOG", "false").lower() == "true"
 
     username = (
@@ -314,7 +331,6 @@ def get_all_tags(skopeo, mirror):
     with database.CloseForLongOperation(app.config):
         result = skopeo.tags(
             "docker://%s" % (mirror.external_reference),
-            mirror.root_rule.rule_value,
             username=username,
             password=password,
             verbose_logs=verbose_logs,
@@ -324,7 +340,7 @@ def get_all_tags(skopeo, mirror):
 
     if not result.success:
         raise RepoMirrorSkopeoException(
-            "skopeo inspect failed: %s" % _skopeo_inspect_failure(result),
+            "skopeo list-tags failed: %s" % _skopeo_inspect_failure(result),
             result.stdout,
             result.stderr,
         )
@@ -332,7 +348,7 @@ def get_all_tags(skopeo, mirror):
     return result.tags
 
 
-def _skopeo_inspect_failure(result):
+def _skopeo_inspect_failure(result: SkopeoResults) -> str:
     """
     Custom processing of skopeo error messages for user friendly description.
 
@@ -340,15 +356,12 @@ def _skopeo_inspect_failure(result):
     :return: Message to display
     """
 
-    lines = result.stderr.split("\n")
-    for line in lines:
-        if re.match(".*Error reading manifest.*", line):
-            return "No matching tags, including 'latest', to inspect for tags list"
-
     return "See output"
 
 
-def rollback(mirror, since_ms):
+def rollback(
+    mirror: RepoMirrorConfig, since_ms: int, tag_names: Optional[list[str]] = None
+) -> None:
     """
     :param mirror: Mirror to perform rollback on
     :param start_time: Time mirror was started; all changes after will be undone
@@ -368,6 +381,9 @@ def rollback(mirror, since_ms):
         )
         tags.extend(tags_page)
         index = index + 1
+
+    if tag_names is not None:
+        tags = [tag for tag in tags if tag.name in tag_names]
 
     for tag in tags:
         logger.debug("Repo mirroring rollback tag '%s'" % tag)

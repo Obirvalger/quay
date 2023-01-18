@@ -17,8 +17,10 @@ from app import (
     namespace_gc_queue,
     ip_resolver,
     app,
+    usermanager,
 )
 from endpoints.api import (
+    allow_if_superuser,
     resource,
     nickname,
     ApiResource,
@@ -40,6 +42,7 @@ from auth.permissions import (
     OrganizationMemberPermission,
     CreateRepositoryPermission,
     ViewTeamPermission,
+    SuperUserPermission,
 )
 from auth.auth_context import get_authenticated_user
 from auth import scopes
@@ -145,16 +148,22 @@ class OrganizationList(ApiResource):
         },
     }
 
-    @require_user_admin
+    @require_user_admin(disallow_for_restricted_users=features.RESTRICTED_USERS)
     @nickname("createOrganization")
     @validate_json_request("NewOrg")
     def post(self):
         """
         Create a new organization.
         """
+        if features.SUPERUSERS_ORG_CREATION_ONLY and not SuperUserPermission().can():
+            raise Unauthorized()
+
         user = get_authenticated_user()
         org_data = request.get_json()
         existing = None
+
+        if features.RESTRICTED_USERS and usermanager.is_restricted_user(user.username):
+            raise Unauthorized()
 
         try:
             existing = model.organization.get_organization(org_data["name"])
@@ -173,13 +182,14 @@ class OrganizationList(ApiResource):
 
         # If recaptcha is enabled, then verify the user is a human.
         if features.RECAPTCHA:
-            recaptcha_response = org_data.get("recaptcha_response", "")
-            result = recaptcha2.verify(
-                app.config["RECAPTCHA_SECRET_KEY"], recaptcha_response, get_request_ip()
-            )
-
-            if not result["success"]:
-                return {"message": "Are you a bot? If not, please revalidate the captcha."}, 400
+            # check if the user is whitelisted to bypass recaptcha security check
+            if user.username not in app.config["RECAPTCHA_WHITELISTED_USERS"]:
+                recaptcha_response = org_data.get("recaptcha_response", "")
+                result = recaptcha2.verify(
+                    app.config["RECAPTCHA_SECRET_KEY"], recaptcha_response, get_request_ip()
+                )
+                if not result["success"]:
+                    return {"message": "Are you a bot? If not, please revalidate the captcha."}, 400
 
         is_possible_abuser = ip_resolver.is_ip_possible_threat(get_request_ip())
         try:
@@ -416,7 +426,7 @@ class OrganizationMemberList(ApiResource):
         List the human members of the specified organization.
         """
         permission = AdministerOrganizationPermission(orgname)
-        if permission.can():
+        if permission.can() or allow_if_superuser():
             try:
                 org = model.organization.get_organization(orgname)
             except model.InvalidOrganizationException:
@@ -638,7 +648,7 @@ class OrganizationApplications(ApiResource):
         List the applications for the specified organization.
         """
         permission = AdministerOrganizationPermission(orgname)
-        if permission.can():
+        if permission.can() or allow_if_superuser():
             try:
                 org = model.organization.get_organization(orgname)
             except model.InvalidOrganizationException:
@@ -657,7 +667,7 @@ class OrganizationApplications(ApiResource):
         Creates a new application under this organization.
         """
         permission = AdministerOrganizationPermission(orgname)
-        if permission.can():
+        if permission.can() or allow_if_superuser():
             try:
                 org = model.organization.get_organization(orgname)
             except model.InvalidOrganizationException:
@@ -728,7 +738,7 @@ class OrganizationApplicationResource(ApiResource):
         Retrieves the application with the specified client_id under the specified organization.
         """
         permission = AdministerOrganizationPermission(orgname)
-        if permission.can():
+        if permission.can() or allow_if_superuser():
             try:
                 org = model.organization.get_organization(orgname)
             except model.InvalidOrganizationException:
@@ -750,7 +760,7 @@ class OrganizationApplicationResource(ApiResource):
         Updates an application under this organization.
         """
         permission = AdministerOrganizationPermission(orgname)
-        if permission.can():
+        if permission.can() or allow_if_superuser():
             try:
                 org = model.organization.get_organization(orgname)
             except model.InvalidOrganizationException:
@@ -784,7 +794,7 @@ class OrganizationApplicationResource(ApiResource):
         Deletes the application under this organization.
         """
         permission = AdministerOrganizationPermission(orgname)
-        if permission.can():
+        if permission.can() or allow_if_superuser():
             try:
                 org = model.organization.get_organization(orgname)
             except model.InvalidOrganizationException:
@@ -819,7 +829,7 @@ class OrganizationApplicationResetClientSecret(ApiResource):
         Resets the client secret of the application.
         """
         permission = AdministerOrganizationPermission(orgname)
-        if permission.can():
+        if permission.can() or allow_if_superuser():
             try:
                 org = model.organization.get_organization(orgname)
             except model.InvalidOrganizationException:
@@ -876,7 +886,7 @@ class OrganizationProxyCacheConfig(ApiResource):
         Retrieves the proxy cache configuration of the organization.
         """
         permission = OrganizationMemberPermission(orgname)
-        if not permission.can():
+        if not permission.can() and not allow_if_superuser():
             raise Unauthorized()
 
         try:
@@ -893,7 +903,7 @@ class OrganizationProxyCacheConfig(ApiResource):
         Creates proxy cache configuration for the organization.
         """
         permission = AdministerOrganizationPermission(orgname)
-        if not permission.can():
+        if not permission.can() and not allow_if_superuser():
             raise Unauthorized()
 
         try:
@@ -909,6 +919,15 @@ class OrganizationProxyCacheConfig(ApiResource):
         try:
             config = model.proxy_cache.create_proxy_cache_config(**data)
             if config is not None:
+                log_action(
+                    "create_proxy_cache_config",
+                    orgname,
+                    {
+                        "upstream_registry": data["upstream_registry"]
+                        if data["upstream_registry"]
+                        else None
+                    },
+                )
                 return "Created", 201
         except model.DataModelException as e:
             logger.error("Error while creating Proxy cache configuration as: %s", str(e))
@@ -921,7 +940,7 @@ class OrganizationProxyCacheConfig(ApiResource):
         Delete proxy cache configuration for the organization.
         """
         permission = AdministerOrganizationPermission(orgname)
-        if not permission.can():
+        if not permission.can() and not allow_if_superuser():
             raise Unauthorized()
 
         try:
@@ -932,6 +951,7 @@ class OrganizationProxyCacheConfig(ApiResource):
         try:
             success = model.proxy_cache.delete_proxy_cache_config(orgname)
             if success:
+                log_action("delete_proxy_cache_config", orgname)
                 return "Deleted", 201
         except model.DataModelException as e:
             logger.error("Error while deleting Proxy cache configuration as: %s", str(e))
@@ -963,7 +983,7 @@ class ProxyCacheConfigValidation(ApiResource):
     @validate_json_request("NewProxyCacheConfig")
     def post(self, orgname):
         permission = AdministerOrganizationPermission(orgname)
-        if not permission.can():
+        if not permission.can() and not allow_if_superuser():
             raise Unauthorized()
 
         try:
@@ -982,7 +1002,7 @@ class ProxyCacheConfigValidation(ApiResource):
             existing = model.organization.get_organization(orgname)
             config.organization = existing
 
-            proxy = Proxy(config, "something-totally-fake", True)
+            proxy = Proxy(config, validation=True)
             response = proxy.get(f"{proxy.base_url}/v2/")
             if response.status_code == 200:
                 return "Valid", 202

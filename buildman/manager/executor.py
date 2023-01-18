@@ -283,7 +283,7 @@ class EC2Executor(BuilderExecutor):
 
         coreos_ami = self.executor_config.get("COREOS_AMI", None)
         if coreos_ami is None:
-            coreos_ami = self.get_coreos_ami(region, channel)
+            coreos_ami = self._get_coreos_ami(region, channel)
 
         user_data = self.generate_cloud_config(token, build_uuid, self.manager_hostname)
         logger.debug("Generated cloud config for build %s: %s", build_uuid, user_data)
@@ -552,7 +552,7 @@ class KubernetesExecutor(BuilderExecutor):
 
         container = {
             "name": "builder",
-            "imagePullPolicy": "IfNotPresent",
+            "imagePullPolicy": self.executor_config.get("IMAGE_PULL_POLICY", "Always"),
             "image": self.image,
             "securityContext": {"privileged": True},
             "env": [
@@ -710,9 +710,19 @@ class KubernetesPodmanExecutor(KubernetesExecutor):
             else self.manager_hostname
         )
 
+        cert = self.executor_config.get("CA_CERT", self._ca_cert())
+        certs = [cert] if cert is not None else []
+        for extra_cert in self.executor_config.get("EXTRA_CA_CERTS", []):
+            try:
+                with open(os.path.join(OVERRIDE_CONFIG_DIRECTORY, extra_cert), "r") as f:
+                    certs.append(f.read())
+            except:
+                logger.warning("Failed to load extra CA cert for builder %s", extra_cert)
+        certs = "\n".join(certs)
+
         container = {
             "name": "builder",
-            "imagePullPolicy": "Always",
+            "imagePullPolicy": self.executor_config.get("IMAGE_PULL_POLICY", "Always"),
             "image": self.image,
             "env": [
                 {"name": "TOKEN", "value": token},
@@ -721,7 +731,8 @@ class KubernetesPodmanExecutor(KubernetesExecutor):
                 {"name": "REGISTRY_HOSTNAME", "value": self.registry_hostname},
                 {"name": "CONTAINER_RUNTIME", "value": "podman"},
                 {"name": "BULDAH_ISOLATION", "value": "chroot"},
-                {"name": "CA_CERT", "value": self.executor_config.get("CA_CERT", self._ca_cert())},
+                {"name": "CA_CERT", "value": certs},
+                {"name": "GIT_SSL_CAINFO", "value": "/certs/cacert.crt"},
                 {"name": "TLS_CERT_PATH", "value": "/certs/cacert.crt"},  # Used by build manager
                 {
                     "name": "SSL_CERT_FILE",

@@ -1,3 +1,5 @@
+from typing import Dict
+
 class FeatureNameValue(object):
     def __init__(self, name: str, value: bool): ...
     def __str__(self) -> str: ...
@@ -126,6 +128,9 @@ REPO_MIRROR: FeatureNameValue
 # Site key and secret key for using recaptcha.
 RECAPTCHA: FeatureNameValue
 
+# List of users allowed to pass through recaptcha security check to enable org/user creation via API
+RECAPTCHA_WHITELISTED_USERS: FeatureNameValue
+
 # Feature Flag: Whether team syncing from the backing auth is enabled.
 TEAM_SYNCING: FeatureNameValue
 
@@ -184,3 +189,9 @@ USER_INITIALIZE: FeatureNameValue
 EXTENDED_REPOSITORY_NAMES: FeatureNameValue
 
 QUOTA_MANAGEMENT: FeatureNameValue
+
+HELM_OCI_SUPPORT: FeatureNameValue
+
+PROXY_CACHE: FeatureNameValue
+
+RESTRICTED_USERS: FeatureNameValue

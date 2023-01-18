@@ -1,3 +1,4 @@
+import os
 import pytest
 
 from contextlib import contextmanager
@@ -13,6 +14,7 @@ from test.fixtures import *
 
 _TEST_CONTENT = os.urandom(1024)
 _TEST_BUCKET = "somebucket"
+_TEST_REGION = "us-east-1"
 _TEST_USER = "someuser"
 _TEST_PASSWORD = "somepassword"
 _TEST_PATH = "some/cool/path"
@@ -75,14 +77,18 @@ def test_direct_download(
             "test/data/test.pem",
             "some/path",
             _TEST_BUCKET,
+            _TEST_REGION,
             _TEST_USER,
             _TEST_PASSWORD,
         )
         engine.put_content(_TEST_PATH, _TEST_CONTENT)
         assert engine.exists(_TEST_PATH)
 
-        # Request a direct download URL for a request from a known AWS IP, and ensure we are returned an S3 URL.
-        assert "s3.amazonaws.com" in engine.get_direct_download_url(_TEST_PATH, test_aws_ip)
+        # Request a direct download URL for a request from a known AWS IP but not in the same region, returned CloudFront URL.
+        assert "cloudfrontdomain" in engine.get_direct_download_url(_TEST_PATH, test_aws_ip)
+
+        # Request a direct download URL for a request from a known AWS IP and in the same region, returned S3 URL.
+        assert "s3.amazonaws.com" in engine.get_direct_download_url(_TEST_PATH, "4.0.0.2")
 
         if ipranges_populated:
             # Request a direct download URL for a request from a non-AWS IP, and ensure we are returned a CloudFront URL.
@@ -108,9 +114,35 @@ def test_direct_download_no_ip(test_aws_ip, aws_ip_range_data, ipranges_populate
         "test/data/test.pem",
         "some/path",
         _TEST_BUCKET,
+        _TEST_REGION,
         _TEST_USER,
         _TEST_PASSWORD,
     )
     engine.put_content(_TEST_PATH, _TEST_CONTENT)
     assert engine.exists(_TEST_PATH)
     assert "s3.amazonaws.com" in engine.get_direct_download_url(_TEST_PATH)
+
+
+@mock_s3
+def test_direct_download_with_username(test_aws_ip, aws_ip_range_data, ipranges_populated, app):
+    ipresolver = IPResolver(app)
+    context = StorageContext("nyc", None, config_provider, ipresolver)
+
+    # Create a test bucket and put some test content.
+    boto3.client("s3").create_bucket(Bucket=_TEST_BUCKET)
+
+    engine = CloudFrontedS3Storage(
+        context,
+        "cloudfrontdomain",
+        "keyid",
+        "test/data/test.pem",
+        "some/path",
+        _TEST_BUCKET,
+        _TEST_REGION,
+        _TEST_USER,
+        _TEST_PASSWORD,
+    )
+    engine.put_content(_TEST_PATH, _TEST_CONTENT)
+    assert engine.exists(_TEST_PATH)
+    url = engine.get_direct_download_url(_TEST_PATH, request_ip="1.2.3.4", username=_TEST_USER)
+    assert f"username={_TEST_USER}" in url

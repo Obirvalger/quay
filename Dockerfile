@@ -13,6 +13,8 @@ ENV QUAYPATH $QUAYDIR
 ENV PYTHONUSERBASE /app
 ENV PYTHONPATH $QUAYPATH
 RUN set -ex\
+	; dnf -y module enable nginx:1.20 \
+	; dnf -y module enable python39:3.9 \
 	; dnf -y -q --setopt=tsflags=nodocs --setopt=skip_missing_names_on_install=False install\
 		dnsmasq \
 		memcached \
@@ -20,26 +22,14 @@ RUN set -ex\
 		libpq-devel \
 		openldap \
 		openssl \
-		python38 \
+		python39 \
 		python3-gpg \
 		skopeo \
 	; dnf -y -q clean all
 
-# Build has all the build-only tools.
-FROM base AS build
-ENV PYTHONDONTWRITEBYTECODE 1
-RUN set -ex\
-	; dnf -y -q --setopt=tsflags=nodocs --setopt=skip_missing_names_on_install=False install\
-		gcc-c++\
-		git\
-		nodejs\
-		openldap-devel\
-		python38-devel\
-	; dnf -y -q clean all
-WORKDIR /build
-
 # Config-editor builds the javascript for the configtool.
-FROM build AS config-editor
+FROM registry.access.redhat.com/ubi8/nodejs-10 AS config-editor
+WORKDIR /opt/app-root/src
 # This argument must be repeated, and should have the same default as
 # the other CONFIGTOOL_VERSION argument.
 ARG CONFIGTOOL_VERSION=v0.1.12
@@ -51,13 +41,40 @@ RUN set -ex\
 	;
 
 # Build-python installs the requirements for the python code.
-FROM build AS build-python
+FROM base AS build-python
+ENV PYTHONDONTWRITEBYTECODE 1
+RUN set -ex\
+	; dnf -y -q --setopt=tsflags=nodocs --setopt=skip_missing_names_on_install=False install\
+		gcc-c++\
+		git\
+		openldap-devel\
+		python39-devel\
+		libffi-devel\
+        openssl-devel \
+        diffutils \
+        file \
+        make \
+        libjpeg-turbo \
+        libjpeg-turbo-devel \
+		wget\
+	; dnf -y -q clean all
+WORKDIR /build
 COPY requirements.txt .
 # Note that it installs into PYTHONUSERBASE because of the '--user'
 # flag.
+RUN ARCH=$(uname -m) ; echo $ARCH; \
+    if [ "$ARCH" == "ppc64le" ] ; then \
+    GE_LATEST=$(grep "gevent" requirements.txt |cut -d "=" -f 3); \
+	wget https://github.com/IBM/oss-ecosystem-gevent/releases/download/${GE_LATEST}/manylinux_ppc64le_wheels_${GE_LATEST}.tar.gz; \
+	tar xvf manylinux_ppc64le_wheels_${GE_LATEST}.tar.gz; \
+	python3 -m pip install --no-cache-dir --user wheelhouse/gevent-${GE_LATEST}-cp39-cp39-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl; \
+    GRPC_LATEST=$(grep "grpcio" requirements.txt |cut -d "=" -f 3); \
+	wget https://github.com/IBM/oss-ecosystem-grpc/releases/download/${GRPC_LATEST}/grpcio-${GRPC_LATEST}-cp39-cp39-linux_ppc64le.whl; \
+	python3 -m pip install --no-cache-dir --user grpcio-${GRPC_LATEST}-cp39-cp39-linux_ppc64le.whl; \
+	fi
 RUN set -ex\
-	; python3 -m pip install --no-cache-dir --progress-bar off\
-		--user --requirement requirements.txt --no-cache\
+    ; python3 -m pip install --no-cache-dir --progress-bar off --user $(grep -e '^pip=' -e '^wheel=' -e '^setuptools=' ./requirements.txt) \
+	; python3 -m pip install --no-cache-dir --progress-bar off --user --requirement requirements.txt \
 	;
 RUN set -ex\
 # Doing this is explicitly against the purpose and use of certifi.
@@ -67,28 +84,38 @@ RUN set -ex\
 	;
 
 # Build-static downloads the static javascript.
-FROM build-python AS build-static
-COPY --chown=0:0 static/  ./static/
-COPY --chown=0:0 *.json *.js  ./
+FROM registry.access.redhat.com/ubi8/nodejs-10 AS build-static
+WORKDIR /opt/app-root/src
+COPY --chown=1001:0 static/  ./static/
+COPY --chown=1001:0 *.json *.js  ./
 RUN set -ex\
 	; npm install --quiet --no-progress --ignore-engines\
 	; npm run --quiet build\
 	;
 
-# Jwtproxy grabs jwtproxy.
-FROM registry.access.redhat.com/ubi8/ubi:latest AS jwtproxy
-ENV OS=linux ARCH=amd64
-ARG JWTPROXY_VERSION=0.0.3
-RUN set -ex\
-	; curl -fsSL -o /usr/local/bin/jwtproxy "https://github.com/coreos/jwtproxy/releases/download/v${JWTPROXY_VERSION}/jwtproxy-${OS}-${ARCH}"\
-	; chmod +x /usr/local/bin/jwtproxy\
-	;
+FROM registry.access.redhat.com/ubi8/nodejs-16:latest as build-ui
+WORKDIR /opt/app-root
+
+# Invalidate quay-ui cache if quay-ui main has changed
+ADD https://api.github.com/repos/quay/quay-ui/git/ref/heads/main version.json
+RUN git clone https://github.com/quay/quay-ui.git
+
+RUN cd quay-ui &&\
+	set -ex &&\
+	npm install --quiet --no-progress --ignore-engines
+
+RUN	cd quay-ui &&\
+	npm run --quiet build
+
+RUN chown -R 1001:0 quay-ui/dist 
 
 # Pushgateway grabs pushgateway.
 FROM registry.access.redhat.com/ubi8/ubi:latest AS pushgateway
-ENV OS=linux ARCH=amd64
+ENV OS=linux 
 ARG PUSHGATEWAY_VERSION=1.0.0
 RUN set -ex\
+	; ARCH=$(uname -m) ; echo $ARCH \
+	; if [ "$ARCH" == "x86_64" ] ; then ARCH="amd64" ; elif [ "$ARCH" == "aarch64" ] ; then ARCH="arm64" ; fi \
 	; curl -fsSL "https://github.com/prometheus/pushgateway/releases/download/v${PUSHGATEWAY_VERSION}/pushgateway-${PUSHGATEWAY_VERSION}.${OS}-${ARCH}.tar.gz"\
 	| tar xz "pushgateway-${PUSHGATEWAY_VERSION}.${OS}-${ARCH}/pushgateway"\
 	; install "pushgateway-${PUSHGATEWAY_VERSION}.${OS}-${ARCH}/pushgateway" /usr/local/bin/pushgateway\
@@ -100,13 +127,13 @@ WORKDIR /opt/app-root/src
 ARG CONFIGTOOL_VERSION=v0.1.12
 RUN curl -fsSL "https://github.com/quay/config-tool/archive/${CONFIGTOOL_VERSION}.tar.gz"\
 	| tar xz --strip-components=1 --exclude '*/pkg/lib/editor/static/build'
-COPY --from=config-editor /build/static/build  /opt/app-root/src/pkg/lib/editor/static/build
+COPY --from=config-editor /opt/app-root/src/static/build  /opt/app-root/src/pkg/lib/editor/static/build
 RUN go install ./cmd/config-tool
 
 # Final is the end container, where all the work from the other
 # containers are copied in.
 FROM base AS final
-LABEL maintainer "thomasmckay@redhat.com"
+LABEL maintainer "quay-devel@redhat.com"
 
 # All of these chgrp+chmod commands are an Openshift-ism.
 #
@@ -138,12 +165,13 @@ RUN set -ex\
 WORKDIR $QUAYDIR
 RUN mkdir ${QUAYDIR}/config_app
 # Ordered from least changing to most changing.
-COPY --from=jwtproxy /usr/local/bin/jwtproxy /usr/local/bin/jwtproxy
 COPY --from=pushgateway /usr/local/bin/pushgateway /usr/local/bin/pushgateway
 COPY --from=build-python /app /app
 COPY --from=config-tool /opt/app-root/src/go/bin/config-tool /bin
-COPY --from=config-editor /build ${QUAYDIR}/config_app
-COPY --from=build-static /build/static ${QUAYDIR}/static
+COPY --from=config-editor /opt/app-root/src ${QUAYDIR}/config_app
+COPY --from=build-static /opt/app-root/src/static ${QUAYDIR}/static
+COPY --from=build-ui /opt/app-root/quay-ui/dist ${QUAYDIR}/static/patternfly
+
 # Copy in source and update local copy of AWS IP Ranges.
 # This is a bad place to do the curl, but there's no good place to do
 # it except to have it checked in.

@@ -4,6 +4,7 @@ import pytest
 
 from mock import patch
 
+from data import model
 from data.database import EmailConfirmation, User, DeletedNamespace, FederatedLogin
 from data.model.organization import get_organization
 from data.model.notification import create_notification
@@ -14,6 +15,7 @@ from data.model.user import create_robot, lookup_robot, list_namespace_robots
 from data.model.user import get_pull_credentials, retrieve_robot_token, verify_robot
 from data.model.user import InvalidRobotException, delete_robot, get_matching_users
 from data.model.user import get_estimated_robot_count, RobotAccountToken, attach_federated_login
+from data.model.user import get_quay_user_from_federated_login_name, get_public_repo_count
 from data.model.repository import create_repository
 from data.fields import Credential
 from data.queue import WorkQueue
@@ -234,3 +236,27 @@ def test_robot(initialized_db):
 
 def test_get_estimated_robot_count(initialized_db):
     assert get_estimated_robot_count() >= RobotAccountToken.select().count()
+
+
+def test_get_quay_user_from_federated_login_name(initialized_db):
+    username = "non-existant-user"
+    assert get_quay_user_from_federated_login_name(username) is None
+
+    devtable_username = "devtable"
+    # When quay.io username is same as SSO username
+    result = get_quay_user_from_federated_login_name(devtable_username)
+    assert result.username == devtable_username
+
+    freshuser_username = "freshuser"  # SSO username
+    public_username = "public"  # quayio username
+    # When quay.io username is different from SSO username
+    result = get_quay_user_from_federated_login_name(freshuser_username)
+    assert result.username == public_username
+
+
+def test_get_public_repo_count(initialized_db):
+    username = "non-existant-user"
+    assert get_public_repo_count(username) == 0
+
+    public_username = "public"
+    assert get_public_repo_count(public_username) == 1

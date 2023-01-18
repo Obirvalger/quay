@@ -12,7 +12,9 @@ from mock import patch
 from contextlib import contextmanager
 
 
-def _create_ldap(requires_email=True, user_filter=None):
+def _create_ldap(
+    requires_email=True, user_filter=None, superuser_filter=None, restricted_user_filter=None
+):
     base_dn = ["dc=quay", "dc=io"]
     admin_dn = "uid=testy,ou=employees,dc=quay,dc=io"
     admin_passwd = "password"
@@ -32,12 +34,16 @@ def _create_ldap(requires_email=True, user_filter=None):
         secondary_user_rdns=secondary_user_rdns,
         requires_email=requires_email,
         ldap_user_filter=user_filter,
+        ldap_superuser_filter=superuser_filter,
+        ldap_restricted_user_filter=restricted_user_filter,
     )
     return ldap
 
 
 @contextmanager
-def mock_ldap(requires_email=True, user_filter=None):
+def mock_ldap(
+    requires_email=True, user_filter=None, superuser_filter=None, restricted_user_filter=None
+):
     mock_data = {
         "dc=quay,dc=io": {"dc": ["quay", "io"]},
         "ou=employees,dc=quay,dc=io": {"dc": ["quay", "io"], "ou": "employees"},
@@ -152,6 +158,26 @@ def mock_ldap(requires_email=True, user_filter=None):
             "userPassword": ["somepass"],
             "mail": ["foo@notblacklisted.com"],
             "filterField": ["somevalue"],
+            "objectClass": "user",
+        },
+        "uid=somesuperuser,ou=employees,dc=quay,dc=io": {
+            "dc": ["quay", "io"],
+            "ou": "employees",
+            "uid": ["somesuperuser"],
+            "userPassword": ["somesuperpass"],
+            "mail": ["superfoo@bar.com"],
+            "memberOf": ["cn=AwesomeFolk,dc=quay,dc=io", "cn=*Guys,dc=quay,dc=io"],
+            "filterField": ["somevalue", "superuser"],
+            "objectClass": "user",
+        },
+        "uid=somerestricteduser,ou=employees,dc=quay,dc=io": {
+            "dc": ["quay", "io"],
+            "ou": "employees",
+            "uid": ["somerestricteduser"],
+            "userPassword": ["somerestrictedpass"],
+            "mail": ["restrictedfoo@bar.com"],
+            "memberOf": ["cn=AwesomeFolk,dc=quay,dc=io", "cn=*Guys,dc=quay,dc=io"],
+            "filterField": ["somevalue", "restricted"],
             "objectClass": "user",
         },
     }
@@ -281,7 +307,12 @@ def mock_ldap(requires_email=True, user_filter=None):
     mockldap.start()
     try:
         with patch("ldap.initialize", new=initializer):
-            yield _create_ldap(requires_email=requires_email, user_filter=user_filter)
+            yield _create_ldap(
+                requires_email=requires_email,
+                user_filter=user_filter,
+                superuser_filter=superuser_filter,
+                restricted_user_filter=restricted_user_filter,
+            )
     finally:
         mockldap.stop()
 
@@ -530,23 +561,39 @@ class TestLDAP(unittest.TestCase):
             self.assertIsNone(err)
 
             results = list(it)
-            self.assertEqual(2, len(results))
+            self.assertEqual(4, len(results))
 
             first = results[0][0]
             second = results[1][0]
+            third = results[2][0]
+            fourth = results[3][0]
 
-            if first.id == "testy":
-                testy, someuser = first, second
-            else:
-                testy, someuser = second, first
+            assert all(
+                x in [u[0].id for u in results]
+                for x in ["testy", "someuser", "somesuperuser", "somerestricteduser"]
+            )
 
-            self.assertEqual("testy", testy.id)
-            self.assertEqual("testy", testy.username)
-            self.assertEqual("bar@baz.com", testy.email)
+            for i in results:
+                u = i[0]
+                if u.id == "testy":
+                    self.assertEqual("testy", u.id)
+                    self.assertEqual("testy", u.username)
+                    self.assertEqual("bar@baz.com", u.email)
 
-            self.assertEqual("someuser", someuser.id)
-            self.assertEqual("someuser", someuser.username)
-            self.assertEqual("foo@bar.com", someuser.email)
+                if u.id == "someuser":
+                    self.assertEqual("someuser", u.id)
+                    self.assertEqual("someuser", u.username)
+                    self.assertEqual("foo@bar.com", u.email)
+
+                if u.id == "somesuperuser":
+                    self.assertEqual("somesuperuser", u.id)
+                    self.assertEqual("somesuperuser", u.username)
+                    self.assertEqual("superfoo@bar.com", u.email)
+
+                if u.id == "somerestricteduser":
+                    self.assertEqual("somerestricteduser", u.id)
+                    self.assertEqual("somerestricteduser", u.username)
+                    self.assertEqual("restrictedfoo@bar.com", u.email)
 
     def test_iterate_group_members_with_pagination(self):
         with mock_ldap() as ldap:
@@ -645,7 +692,7 @@ class TestLDAP(unittest.TestCase):
         with mock_ldap(user_filter=some_user_filter) as ldap:
             search_flt = filter_format("(memberOf=%s,%s)", ("cn=AwesomeFolk", ldap._base_dn))
             search_flt = ldap._add_user_filter(search_flt)
-            self.assertEquals(
+            self.assertEqual(
                 search_flt, "(&(memberOf=cn=AwesomeFolk,dc=quay,dc=io)(filterField=somevalue))"
             )
 
@@ -653,9 +700,29 @@ class TestLDAP(unittest.TestCase):
         with mock_ldap(user_filter=some_other_user_filter) as ldap:
             search_flt = filter_format("(memberOf=%s,%s)", ("cn=AwesomeFolk", ldap._base_dn))
             search_flt = ldap._add_user_filter(search_flt)
-            self.assertEquals(
+            self.assertEqual(
                 search_flt,
                 "(&(memberOf=cn=AwesomeFolk,dc=quay,dc=io)(filterField=somevalue)(filterField2=someothervalue))",
+            )
+
+        some_superuser_filter = "(filterField=somesuperuser)"
+        some_restricted_user_filter = "(filterField=somerestricteduser)"
+        with mock_ldap(
+            user_filter=some_user_filter,
+            superuser_filter=some_superuser_filter,
+            restricted_user_filter=some_restricted_user_filter,
+        ) as ldap:
+            search_flt = filter_format("(memberOf=%s,%s)", ("cn=AwesomeFolk", ldap._base_dn))
+            search_flt = ldap._add_user_filter(search_flt)
+            superuser_search_flt = ldap._add_superuser_filter(search_flt)
+            restricted_user_search_flt = ldap._add_restricted_user_filter(search_flt)
+            self.assertEqual(
+                superuser_search_flt,
+                "(&(&(memberOf=cn=AwesomeFolk,dc=quay,dc=io)(filterField=somevalue))(filterField=somesuperuser))",
+            )
+            self.assertEqual(
+                restricted_user_search_flt,
+                "(&(&(memberOf=cn=AwesomeFolk,dc=quay,dc=io)(filterField=somevalue))(filterField=somerestricteduser))",
             )
 
     def test_ldap_user_filtering_no_users(self):
@@ -671,14 +738,14 @@ class TestLDAP(unittest.TestCase):
             self.assertIsNone(err)
 
             results = list(it)
-            self.assertEquals(0, len(results))
+            self.assertEqual(0, len(results))
 
     def test_ldap_user_filtering_valid_users(self):
         valid_user_filter = "(filterField=somevalue)"
         with mock_ldap(user_filter=valid_user_filter) as ldap:
             # Verify we can login.
             (response, _) = ldap.verify_and_link_user("someuser", "somepass")
-            self.assertEquals(response.username, "someuser")
+            self.assertEqual(response.username, "someuser")
 
             (it, err) = ldap.iterate_group_members(
                 {"group_dn": "cn=AwesomeFolk"}, disable_pagination=True
@@ -686,7 +753,127 @@ class TestLDAP(unittest.TestCase):
             self.assertIsNone(err)
 
             results = list(it)
-            self.assertEquals(2, len(results))
+            self.assertEqual(4, len(results))
+
+    def test_ldap_superuser_and_restricted_user_filtering(self):
+        valid_user_filter = "(filterField=somevalue)"
+        valid_superuser_filter = "(filterField=superuser)"
+        valid_restricted_user_filter = "(filterField=restricted)"
+
+        with mock_ldap(user_filter=valid_user_filter) as ldap:
+            # Verify we can login.
+            (response, _) = ldap.verify_and_link_user("someuser", "somepass")
+            self.assertEqual(response.username, "someuser")
+
+        with mock_ldap(
+            user_filter=valid_user_filter,
+            superuser_filter=valid_superuser_filter,
+            restricted_user_filter=valid_restricted_user_filter,
+        ) as ldap:
+            (it, err) = ldap.iterate_group_members(
+                {"group_dn": "cn=AwesomeFolk"}, disable_pagination=True
+            )
+            self.assertIsNone(err)
+
+            results = list(it)
+            self.assertEqual(4, len(results))
+
+            for u in results:
+                user = u[0]
+
+                is_superuser = ldap.is_superuser(user.username)
+                is_restricted_user = ldap.is_restricted_user(user.username)
+
+                if user.username == "somesuperuser":
+                    self.assertTrue(is_superuser)
+                    self.assertFalse(is_restricted_user)
+
+                    self.assertEqual("somesuperuser", user.id)
+                    self.assertEqual("somesuperuser", user.username)
+                    self.assertEqual("superfoo@bar.com", user.email)
+
+                elif user.username == "somerestricteduser":
+                    self.assertTrue(is_restricted_user)
+                    self.assertFalse(is_superuser)
+
+                    self.assertEqual("somerestricteduser", user.id)
+                    self.assertEqual("somerestricteduser", user.username)
+                    self.assertEqual("restrictedfoo@bar.com", user.email)
+
+                else:
+                    self.assertFalse(is_superuser)
+                    self.assertFalse(is_restricted_user)
+
+            self.assertTrue(ldap.has_superusers())
+            self.assertTrue(ldap.has_restricted_users())
+
+    def test_ldap_superuser_and_restricted_user_invalid_filter(self):
+        valid_user_filter = "(filterField=somevalue)"
+        invalid_superuser_filter = "(filterField=notsuperuser)"
+        invalid_restricted_user_filter = "(filterField=notrestricted)"
+
+        with mock_ldap(user_filter=valid_user_filter) as ldap:
+            # Verify we can login.
+            (response, _) = ldap.verify_and_link_user("someuser", "somepass")
+            self.assertEqual(response.username, "someuser")
+
+        with mock_ldap(
+            user_filter=valid_user_filter,
+            superuser_filter=invalid_superuser_filter,
+            restricted_user_filter=invalid_restricted_user_filter,
+        ) as ldap:
+            (it, err) = ldap.iterate_group_members(
+                {"group_dn": "cn=AwesomeFolk"}, disable_pagination=True
+            )
+            self.assertIsNone(err)
+
+            results = list(it)
+            self.assertEqual(4, len(results))
+
+            for u in results:
+                user = u[0]
+
+                is_superuser = ldap.is_superuser(user.username)
+                is_restricted_user = ldap.is_restricted_user(user.username)
+                self.assertFalse(is_superuser)
+                self.assertFalse(is_restricted_user)
+
+            self.assertFalse(ldap.has_superusers())
+            self.assertFalse(ldap.has_restricted_users())
+
+    def test_ldap_superuser_and_restricted_user_no_filter_set(self):
+        valid_user_filter = "(filterField=somevalue)"
+        superuser_filter = None
+        restricted_user_filter = None
+
+        with mock_ldap(user_filter=valid_user_filter) as ldap:
+            # Verify we can login.
+            (response, _) = ldap.verify_and_link_user("someuser", "somepass")
+            self.assertEqual(response.username, "someuser")
+
+        with mock_ldap(
+            user_filter=valid_user_filter,
+            superuser_filter=superuser_filter,
+            restricted_user_filter=restricted_user_filter,
+        ) as ldap:
+            (it, err) = ldap.iterate_group_members(
+                {"group_dn": "cn=AwesomeFolk"}, disable_pagination=True
+            )
+            self.assertIsNone(err)
+
+            results = list(it)
+            self.assertEqual(4, len(results))
+
+            for u in results:
+                user = u[0]
+
+                is_superuser = ldap.is_superuser(user.username)
+                is_restricted_user = ldap.is_restricted_user(user.username)
+                self.assertFalse(is_superuser)
+                self.assertTrue(is_restricted_user)
+
+            self.assertFalse(ldap.has_superusers())
+            self.assertTrue(ldap.has_restricted_users())
 
     def test_at_least_one_user_exists_filtered(self):
         base_dn = ["dc=quay", "dc=io"]
