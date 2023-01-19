@@ -18,8 +18,10 @@ RUN set -ex ; \
         ca-trust \
         curl \
 		dnsmasq \
+        git-core \
 		memcached \
 		nginx \
+        npm \
 		openssl \
 		python3 \
 		python3-module-gpg \
@@ -59,9 +61,10 @@ WORKDIR /build
 
 # Config-editor builds the javascript for the configtool.
 FROM build AS config-editor
+WORKDIR /opt/app-root/src
 # This argument must be repeated, and should have the same default as
 # the other CONFIGTOOL_VERSION argument.
-ARG CONFIGTOOL_VERSION=v0.1.11
+ARG CONFIGTOOL_VERSION=v0.1.12
 RUN curl -fsSL "https://github.com/quay/config-tool/archive/${CONFIGTOOL_VERSION}.tar.gz"\
 	| tar xz --strip-components=4 --exclude='*.go'
 RUN set -ex\
@@ -75,33 +78,41 @@ COPY requirements.txt .
 # Note that it installs into PYTHONUSERBASE because of the '--user'
 # flag.
 RUN set -ex\
-    ; python3 -m pip install --no-cache-dir --progress-bar off\
-        --user --requirement requirements.txt --no-cache\
-    ;
+    ; python3 -m pip install --no-cache-dir --progress-bar off --user $(grep -e '^pip=' -e '^wheel=' -e '^setuptools=' ./requirements.txt) \
+	; python3 -m pip install --no-cache-dir --progress-bar off --user --requirement requirements.txt \
+	;
 RUN set -ex\
 # Doing this is explicitly against the purpose and use of certifi.
-    ; for dir in\
-        $(find "$(python3 -m site --user-base)" -type d -name certifi)\
-    ; do chgrp -R 0 "$dir" && chmod -R g=u "$dir" ; done\
-    ;
+	; for dir in\
+		$(find "$(python3 -m site --user-base)" -type d -name certifi)\
+	; do chgrp -R 0 "$dir" && chmod -R g=u "$dir" ; done\
+	;
 
 # Build-static downloads the static javascript.
 FROM build-python AS build-static
-COPY --chown=0:0 static/  ./static/
-COPY --chown=0:0 *.json *.js  ./
+WORKDIR /opt/app-root/src
+COPY --chown=1001:0 static/  ./static/
+COPY --chown=1001:0 *.json *.js  ./
 RUN set -ex\
 	; npm install --quiet --no-progress --ignore-engines\
 	; npm run --quiet build\
 	;
 
-# Jwtproxy grabs jwtproxy.
-FROM build AS jwtproxy
-ENV OS=linux ARCH=amd64
-ARG JWTPROXY_VERSION=0.0.3
-RUN set -ex\
-	; curl -fsSL -o /usr/local/bin/jwtproxy "https://github.com/coreos/jwtproxy/releases/download/v${JWTPROXY_VERSION}/jwtproxy-${OS}-${ARCH}"\
-	; chmod +x /usr/local/bin/jwtproxy\
-	;
+FROM base as build-ui
+WORKDIR /opt/app-root
+
+# Invalidate quay-ui cache if quay-ui main has changed
+ADD https://api.github.com/repos/quay/quay-ui/git/ref/heads/main version.json
+RUN git clone https://github.com/quay/quay-ui.git
+
+RUN cd quay-ui &&\
+	set -ex &&\
+	npm install --quiet --no-progress --ignore-engines
+
+RUN	cd quay-ui &&\
+	npm run --quiet build
+
+RUN chown -R 1001:0 quay-ui/dist
 
 # Pushgateway grabs pushgateway.
 FROM build AS pushgateway
@@ -116,10 +127,10 @@ RUN set -ex\
 # Config-tool builds the go binary in the configtool.
 FROM build as config-tool
 WORKDIR /opt/app-root/src
-ARG CONFIGTOOL_VERSION=v0.1.11
+ARG CONFIGTOOL_VERSION=v0.1.12
 RUN curl -fsSL "https://github.com/quay/config-tool/archive/${CONFIGTOOL_VERSION}.tar.gz"\
 	| tar xz --strip-components=1 --exclude '*/pkg/lib/editor/static/build'
-COPY --from=config-editor /build/static/build  /opt/app-root/src/pkg/lib/editor/static/build
+COPY --from=config-editor /opt/app-root/src/static/build  /opt/app-root/src/pkg/lib/editor/static/build
 RUN go install ./cmd/config-tool
 
 # Final is the end container, where all the work from the other
@@ -138,13 +149,12 @@ RUN set -ex\
 	; newdir() { for d in "$@"; do mkdir -m g+w "$d" || { mkdir -p "$d" && chgrp 0 "$d" && chmod g=u "$d"; }; ls -ld "$d"; done; }\
 # Allow TLS certs to be created and installed as non-root user.
 # See also update-ca-trust(8).
-    ; setperms /etc/pki/ca-trust/extracted /etc/pki/ca-trust/source/anchors\
+	; setperms /etc/pki/ca-trust/extracted /etc/pki/ca-trust/source/anchors\
 # Allow for nginx to run unprivledged.
-    ; setperms /etc/nginx\
-    ; setperms /etc/dnsmasq.conf\
-    ; ln -sf /dev/stdout /var/log/nginx/access.log\
-    ; ln -sf /dev/stdout /var/log/nginx/error.log\
-    ; setperms /var/log/nginx/\
+	; setperms /etc/nginx\
+	; setperms /var/log/nginx\
+	; ln -sf /dev/stdout /var/log/nginx/access.log\
+	; ln -sf /dev/stdout /var/log/nginx/error.log\
 # The code doesn't agree on where the configuration lives, so create a
 # symlink.
 	; ln -s $QUAYCONF /conf\
@@ -159,20 +169,21 @@ RUN set -ex\
 WORKDIR $QUAYDIR
 RUN mkdir ${QUAYDIR}/config_app
 # Ordered from least changing to most changing.
-COPY --from=jwtproxy /usr/local/bin/jwtproxy /usr/local/bin/jwtproxy
 COPY --from=pushgateway /usr/local/bin/pushgateway /usr/local/bin/pushgateway
 COPY --from=build-python /app /app
 COPY --from=config-tool /root/go/bin/config-tool /bin
-COPY --from=config-editor /build ${QUAYDIR}/config_app
-COPY --from=build-static /build/static ${QUAYDIR}/static
+COPY --from=config-editor /opt/app-root/src ${QUAYDIR}/config_app
+COPY --from=build-static /opt/app-root/src/static ${QUAYDIR}/static
+COPY --from=build-ui /opt/app-root/quay-ui/dist ${QUAYDIR}/static/patternfly
+
 # Copy in source and update local copy of AWS IP Ranges.
 # This is a bad place to do the curl, but there's no good place to do
 # it except to have it checked in.
 COPY --chown=0:0 . ${QUAYDIR}
 RUN set -ex\
 	; chmod -R g=u "${QUAYDIR}"\
-    ; curl -fsSL https://ip-ranges.amazonaws.com/ip-ranges.json -o util/ipresolver/aws-ip-ranges.json\
-    ;
+	; curl -fsSL https://ip-ranges.amazonaws.com/ip-ranges.json -o util/ipresolver/aws-ip-ranges.json\
+	;
 
 RUN rm -Rf node_modules config_app/node_modules
 
