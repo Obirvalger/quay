@@ -136,7 +136,7 @@ RUN go install ./cmd/config-tool
 # Final is the end container, where all the work from the other
 # containers are copied in.
 FROM base AS final
-LABEL maintainer "obirvalger@altlinuxt.org"
+LABEL maintainer "cloud@altlinux.org"
 
 # All of these chgrp+chmod commands are an Openshift-ism.
 #
