@@ -77,6 +77,16 @@ FROM build AS build-python
 COPY requirements.txt .
 # Note that it installs into PYTHONUSERBASE because of the '--user'
 # flag.
+RUN ARCH=$(uname -m) ; echo $ARCH; \
+    if [ "$ARCH" == "ppc64le" ] ; then \
+    GE_LATEST=$(grep "gevent" requirements.txt |cut -d "=" -f 3); \
+	wget https://github.com/IBM/oss-ecosystem-gevent/releases/download/${GE_LATEST}/manylinux_ppc64le_wheels_${GE_LATEST}.tar.gz; \
+	tar xvf manylinux_ppc64le_wheels_${GE_LATEST}.tar.gz; \
+	python3 -m pip install --no-cache-dir --user wheelhouse/gevent-${GE_LATEST}-cp39-cp39-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl; \
+    GRPC_LATEST=$(grep "grpcio" requirements.txt |cut -d "=" -f 3); \
+	wget https://github.com/IBM/oss-ecosystem-grpc/releases/download/${GRPC_LATEST}/grpcio-${GRPC_LATEST}-cp39-cp39-linux_ppc64le.whl; \
+	python3 -m pip install --no-cache-dir --user grpcio-${GRPC_LATEST}-cp39-cp39-linux_ppc64le.whl; \
+	fi
 RUN set -ex\
     ; python3 -m pip install --no-cache-dir --progress-bar off --user $(grep -e '^pip=' -e '^wheel=' -e '^setuptools=' ./requirements.txt) \
 	; python3 -m pip install --no-cache-dir --progress-bar off --user --requirement requirements.txt \
@@ -98,27 +108,22 @@ RUN set -ex\
 	; npm run --quiet build\
 	;
 
+# Build React UI
 FROM base as build-ui
 WORKDIR /opt/app-root
+COPY --chown=1001:0 web .
 
-# Invalidate quay-ui cache if quay-ui main has changed
-ADD https://api.github.com/repos/quay/quay-ui/git/ref/heads/main version.json
-RUN git clone https://github.com/quay/quay-ui.git
-
-RUN cd quay-ui &&\
-	set -ex &&\
+RUN set -ex &&\
 	npm install --quiet --no-progress --ignore-engines
-
-RUN	cd quay-ui &&\
-	npm run --quiet build
-
-RUN chown -R 1001:0 quay-ui/dist
+RUN	npm run --quiet build
 
 # Pushgateway grabs pushgateway.
 FROM build AS pushgateway
 ENV OS=linux ARCH=amd64
 ARG PUSHGATEWAY_VERSION=1.0.0
 RUN set -ex\
+	; ARCH=$(uname -m) ; echo $ARCH \
+	; if [ "$ARCH" == "x86_64" ] ; then ARCH="amd64" ; elif [ "$ARCH" == "aarch64" ] ; then ARCH="arm64" ; fi \
 	; curl -fsSL "https://github.com/prometheus/pushgateway/releases/download/v${PUSHGATEWAY_VERSION}/pushgateway-${PUSHGATEWAY_VERSION}.${OS}-${ARCH}.tar.gz"\
 	| tar xz "pushgateway-${PUSHGATEWAY_VERSION}.${OS}-${ARCH}/pushgateway"\
 	; install "pushgateway-${PUSHGATEWAY_VERSION}.${OS}-${ARCH}/pushgateway" /usr/local/bin/pushgateway\
@@ -174,7 +179,7 @@ COPY --from=build-python /app /app
 COPY --from=config-tool /root/go/bin/config-tool /bin
 COPY --from=config-editor /opt/app-root/src ${QUAYDIR}/config_app
 COPY --from=build-static /opt/app-root/src/static ${QUAYDIR}/static
-COPY --from=build-ui /opt/app-root/quay-ui/dist ${QUAYDIR}/static/patternfly
+COPY --from=build-ui /opt/app-root/dist ${QUAYDIR}/static/patternfly
 
 # Copy in source and update local copy of AWS IP Ranges.
 # This is a bad place to do the curl, but there's no good place to do
