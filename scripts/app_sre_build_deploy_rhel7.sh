@@ -25,5 +25,4 @@ skopeo copy --dest-creds "${QUAY_USER}:${QUAY_TOKEN}" \
 
 skopeo copy --dest-creds "${QUAY_USER}:${QUAY_TOKEN}" \
     "docker-archive:${BASE_IMG}" \
-    "docker://${QUAY_IMAGE}:${GIT_HASH}"
-
+    "docker://${BACKUP_IMAGE}:${GIT_HASH}"
