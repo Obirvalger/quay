@@ -384,12 +384,6 @@ class DefaultConfig(ImmutableConfig):
     # Feature Flag: Whether to support signing
     FEATURE_SIGNING = False
 
-    # Feature Flag: Whether to enable support for App repositories.
-    FEATURE_APP_REGISTRY = False
-
-    # Feature Flag: Whether app registry is in a read-only mode.
-    FEATURE_READONLY_APP_REGISTRY = False
-
     # Feature Flag: If set to true, the _catalog endpoint returns public repositories. Otherwise,
     # only private repositories can be returned.
     FEATURE_PUBLIC_CATALOG = False
@@ -672,8 +666,6 @@ class DefaultConfig(ImmutableConfig):
         "catalog_page_cache_ttl": "60s",
         "namespace_geo_restrictions_cache_ttl": "240s",
         "active_repo_tags_cache_ttl": "120s",
-        "appr_applications_list_cache_ttl": "3600s",
-        "appr_show_package_cache_ttl": "3600s",
     }
 
     # Defines the number of successive failures of a build trigger's build before the trigger is
@@ -745,18 +737,6 @@ class DefaultConfig(ImmutableConfig):
     # The timeout after which a fresh login check is required for sensitive operations.
     FRESH_LOGIN_TIMEOUT = "10m"
 
-    # The limit on the number of results returned by app registry listing operations.
-    APP_REGISTRY_RESULTS_LIMIT = 100
-
-    # The whitelist of namespaces whose app registry package list is cached for 1 hour.
-    APP_REGISTRY_PACKAGE_LIST_CACHE_WHITELIST: Optional[List[str]] = []
-
-    # The whitelist of namespaces whose app registry show package is cached for 1 hour.
-    APP_REGISTRY_SHOW_PACKAGE_CACHE_WHITELIST: Optional[List[str]] = []
-
-    # The maximum size of uploaded CNR layers.
-    MAXIMUM_CNR_LAYER_SIZE = "2m"
-
     # Feature Flag: Whether to clear expired RepositoryActionCount entries.
     FEATURE_CLEAR_EXPIRED_RAC_ENTRIES = False
 
@@ -820,7 +800,7 @@ class DefaultConfig(ImmutableConfig):
     FEATURE_EXTENDED_REPOSITORY_NAMES = True
 
     # Automatically clean stale blobs leftover in the uploads storage folder from cancelled uploads
-    CLEAN_BLOB_UPLOAD_FOLDER = False
+    CLEAN_BLOB_UPLOAD_FOLDER = True
 
     # Add quota management configuration, caching, and validation
     FEATURE_QUOTA_MANAGEMENT = False
