@@ -1,4 +1,4 @@
-FROM altlinux/base:latest AS base
+FROM registry.altlinux.org/alt/base AS base
 # Only set variables or install packages that need to end up in the
 # final container here.
 ENV PATH=/app/bin/:$PATH \
@@ -21,7 +21,8 @@ RUN set -ex ; \
         git-core \
 		memcached \
 		nginx \
-        npm \
+		npm \
+		libpq-devel \
 		openssl \
 		python3 \
 		python3-module-gpg \
@@ -62,11 +63,7 @@ WORKDIR /build
 # Config-editor builds the javascript for the configtool.
 FROM build AS config-editor
 WORKDIR /opt/app-root/src
-# This argument must be repeated, and should have the same default as
-# the other CONFIGTOOL_VERSION argument.
-ARG CONFIGTOOL_VERSION=v0.1.12
-RUN curl -fsSL "https://github.com/quay/config-tool/archive/${CONFIGTOOL_VERSION}.tar.gz"\
-	| tar xz --strip-components=4 --exclude='*.go'
+COPY --chown=1001:0 config-tool/pkg/lib/editor/ ./
 RUN set -ex\
 	; npm install --quiet --no-progress --ignore-engines\
 	; npm run --quiet build\
@@ -77,6 +74,18 @@ FROM build AS build-python
 COPY requirements.txt .
 # Note that it installs into PYTHONUSERBASE because of the '--user'
 # flag.
+
+# When cross-compiling the container, cargo uncontrollably consumes memory and
+# gets killed by the OOM Killer when it fetches dependencies. The workaround is
+# to use the git executable.
+# See https://github.com/rust-lang/cargo/issues/10583 for details.
+ENV CARGO_NET_GIT_FETCH_WITH_CLI=true
+
+# Added GRPC & Gevent support for IBMZ
+# wget has been added to reduce the build time
+# In Future if wget is to be removed , then uncomment below line for grpc installation on IBMZ i.e. s390x
+# ENV GRPC_PYTHON_BUILD_SYSTEM_OPENSSL 1
+
 RUN ARCH=$(uname -m) ; echo $ARCH; \
     if [ "$ARCH" == "ppc64le" ] ; then \
     GE_LATEST=$(grep "gevent" requirements.txt |cut -d "=" -f 3); \
@@ -119,7 +128,7 @@ RUN	npm run --quiet build
 
 # Pushgateway grabs pushgateway.
 FROM build AS pushgateway
-ENV OS=linux ARCH=amd64
+ENV OS=linux
 ARG PUSHGATEWAY_VERSION=1.0.0
 RUN set -ex\
 	; ARCH=$(uname -m) ; echo $ARCH \
@@ -132,9 +141,7 @@ RUN set -ex\
 # Config-tool builds the go binary in the configtool.
 FROM build as config-tool
 WORKDIR /opt/app-root/src
-ARG CONFIGTOOL_VERSION=v0.1.12
-RUN curl -fsSL "https://github.com/quay/config-tool/archive/${CONFIGTOOL_VERSION}.tar.gz"\
-	| tar xz --strip-components=1 --exclude '*/pkg/lib/editor/static/build'
+COPY config-tool/ ./
 COPY --from=config-editor /opt/app-root/src/static/build  /opt/app-root/src/pkg/lib/editor/static/build
 RUN go install ./cmd/config-tool
 
